@@ -8,6 +8,7 @@ import { commands as elementCommands, getElementInPage } from './get-element.mjs
 import { commands as waitCommands, waitTextInPage } from './wait.mjs';
 import { commands as scopedCommands, scopedSnapshotInPage } from './scoped-snapshot.mjs';
 import { commands as findCommands } from './find-click.mjs';
+import { changedRatio, clampClip, frameFingerprint, maxImageBase64, screenshotInPage, screenshotRequest } from './screenshot.mjs';
 
 const adapterCommands = { __proto__: null, ...interaction, ...inspection, ...integrations, ...elementCommands, ...waitCommands, ...scopedCommands, ...findCommands };
 for (const verb of ['url', 'tab-info', 'session-start', 'session-handoff', 'session-restore', ...browserWideCommands]) {
@@ -620,6 +621,95 @@ async function click(s, target, y, wasActive, expectedDocument, findTicket) {
   return { ...point, dispatched: true };
 }
 
+// Last image per tab and capture mode, kept only in memory, for --if-changed.
+const lastCaptures = new Map();
+chrome.tabs.onRemoved.addListener((tabId) => lastCaptures.delete(tabId));
+
+async function decodeImage(data) {
+  const bytes = Uint8Array.from(atob(data), (char) => char.charCodeAt(0));
+  const bitmap = await createImageBitmap(new Blob([bytes]));
+  const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
+  const context = canvas.getContext('2d', { willReadFrequently: true });
+  context.drawImage(bitmap, 0, 0);
+  bitmap.close();
+  return context.getImageData(0, 0, canvas.width, canvas.height);
+}
+
+async function guardedFrames(s) {
+  if (!navigation?.getAllFrames) throw new Error('Screenshots require Chrome webNavigation');
+  return frameFingerprint(await navigation.getAllFrames({ tabId: s.id }),
+    (url) => hasHostAccess(chrome.permissions, url));
+}
+
+async function screenshotPage(s, documentId, operation, payload) {
+  if (session !== s || s.documentId !== documentId) throw new Error('Selected document changed; screenshot cancelled');
+  const [injection] = await chrome.scripting.executeScript({
+    target: { tabId: s.id, documentIds: [documentId] }, world: 'ISOLATED',
+    func: screenshotInPage, args: [s.origin, s.overlayKey, operation, payload ?? null],
+  });
+  if (injection?.documentId !== documentId) throw new Error('Selected document changed; screenshot cancelled');
+  if (!injection.result?.ok) throw new Error(injection.result?.error || 'Page is not available');
+  return injection.result.value;
+}
+
+async function screenshot(s, args) {
+  if (args.length !== 1) throw new Error('Usage: vacu screenshot [SELECTOR] [PATH] [--full] [--annotate] ...');
+  const request = screenshotRequest(args[0]);
+  let annotations;
+  if (request.annotate) {
+    const { controls } = await page(s, 'snapshot');
+    annotations = controls.map(({ ref, role, name }, i) => ({ label: i + 1, ref, role, name }));
+  } else {
+    await page(s, 'show');
+  }
+  const documentId = s.documentId;
+  if (!documentId) throw new Error('Selected document is not ready');
+  const prepared = await screenshotPage(s, documentId, 'prepare', { target: request.target, annotate: request.annotate });
+  let data;
+  let clipped = false;
+  try {
+    const before = await guardedFrames(s);
+    let clip = prepared.clip;
+    if (request.full) {
+      const { cssContentSize, contentSize } = await cdp(s, 'Page.getLayoutMetrics');
+      const { width, height } = cssContentSize ?? contentSize;
+      clip = { x: 0, y: 0, width, height };
+    }
+    const params = { format: request.format };
+    if (request.quality !== null) params.quality = request.quality;
+    if (clip) {
+      ({ clip, clipped } = clampClip(clip));
+      Object.assign(params, { clip: { ...clip, scale: 1 }, captureBeyondViewport: true });
+    }
+    // Chrome can occasionally never answer; don't keep the bridge busy forever.
+    let timer;
+    ({ data } = await Promise.race([
+      cdp(s, 'Page.captureScreenshot', params),
+      new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('Chrome did not return a screenshot; try again')), 12_000); }),
+    ]).finally(() => clearTimeout(timer)));
+    // Discard the image if any frame document appeared, navigated or lost access while capturing.
+    if (await guardedFrames(s) !== before) throw new Error('Frames changed during capture; screenshot discarded, try again');
+    await checkedTab(s);
+    if (session !== s || s.documentId !== documentId) throw new Error('Selected document changed; screenshot discarded');
+  } finally {
+    await screenshotPage(s, documentId, 'restore').catch(() => {});
+  }
+  if (typeof data !== 'string' || !data || data.length > maxImageBase64) {
+    throw new Error('Screenshot is too large; capture a selector or use --screenshot-format jpeg');
+  }
+  const result = { format: request.format, ...(clipped ? { clipped } : {}), ...(annotations ? { annotations } : {}) };
+  if (request.ifChanged) {
+    const key = JSON.stringify([s.origin, request.target, request.full, request.annotate, request.format, request.quality]);
+    const previous = lastCaptures.get(s.id);
+    const ratio = previous?.key !== key ? 1 : previous.data === data ? 0
+      : changedRatio(await decodeImage(previous.data), await decodeImage(data));
+    result.changedRatio = ratio;
+    if (previous?.key === key && ratio <= request.threshold) return { ...result, unchanged: true };
+    lastCaptures.set(s.id, { key, data });
+  }
+  return { ...result, data };
+}
+
 async function runAdapter(connection, verb, args) {
   const s = session;
   const documentId = s?.documentId;
@@ -925,9 +1015,7 @@ async function command(connection, args) {
   if (!s) throw new Error('Select an allowed tab with vacu use TAB_ID');
   const { active: wasActive } = await checkedTab(s);
   if (verb === 'snapshot' && count === 0) return page(s, verb);
-  if (verb === 'screenshot' && count === 0) {
-    throw new Error('Raster capture is disabled: Chrome cannot guarantee exclusion of unapproved frame pixels');
-  }
+  if (verb === 'screenshot') return screenshot(s, args.slice(1));
   if (verb === 'type' && count === 1 && a.length > 0 && a.length <= 4000) {
     await page(s, verb);
     await cdp(s, 'Input.insertText', { text: a });

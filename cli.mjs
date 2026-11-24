@@ -1,7 +1,11 @@
 #!/usr/bin/env node
-import { writeFile } from 'node:fs/promises';
+import { randomBytes } from 'node:crypto';
+import { mkdir, writeFile } from 'node:fs/promises';
 import { createConnection } from 'node:net';
+import { tmpdir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
 import { runInNewContext } from 'node:vm';
+import { parseScreenshotArgs, screenshotFileName } from './screenshot-options.mjs';
 import { privateDirectory, requestLimit, responseLimit, socketPath } from './socket.mjs';
 
 const usage = `vacu status | tabs | use TAB_ID | release
@@ -21,7 +25,14 @@ vacu click @rN | click X Y     Click a fresh control or viewport point
 vacu move X Y | hover @rN      Move the virtual cursor to a point or control
 vacu type TEXT                 Insert text into the focused text field
 vacu scroll DY [@rN]           Wheel-scroll over the cursor or a control
-vacu screenshot NEW_FILE.jpg   Unavailable: cannot exclude unapproved frame pixels
+vacu screenshot [SELECTOR] [PATH]  Save a PNG/JPEG of the viewport, @rN or a CSS-selected element (Chrome)
+    --full, -f                 Capture the full page, not just the viewport
+    --annotate                 Take a snapshot and label each control [N] = @rN; prints the legend
+    --if-changed               Skip writing if the image matches the previous capture of this tab
+    --threshold 0-1            Changed-pixel ratio still treated as unchanged (implies --if-changed)
+    --screenshot-dir DIR       Directory when no PATH is given (VACU_SCREENSHOT_DIR, default: temp)
+    --screenshot-format FMT    png (default) or jpeg (VACU_SCREENSHOT_FORMAT, or PATH extension)
+    --screenshot-quality 0-100 JPEG quality (VACU_SCREENSHOT_QUALITY)
 vacu cursor-move TARGET | mouse-click BUTTON MODIFIERS TARGET | double-click TARGET
 vacu drag X1 Y1 X2 Y2 | wheel DX DY [TARGET] | keypress CHORD
 vacu insert-text TEXT | fill @rN TEXT | select-option @rN VALUE | set-checked @rN true|false
@@ -97,12 +108,23 @@ function filterControls({ title, controls }, { role, term = '', regex }) {
 try {
   if (!args.length || ['help', '--help', '-h'].includes(args[0])) {
     console.log(usage);
-  } else if (args[0] === 'screenshot') {
-    if (args.length !== 2 || !/\.jpe?g$/i.test(args[1])) throw new Error('Supply a new .jpg file path');
-    const data = Buffer.from(await request(['screenshot']), 'base64');
-    if (data[0] !== 255 || data[1] !== 216) throw new Error('Chrome did not return a JPEG');
-    await writeFile(args[1], data, { flag: 'wx', mode: 0o600 });
-    console.log(args[1]);
+  } else if (args[args[0] === '--session' ? 2 : 0] === 'screenshot') {
+    const index = args[0] === '--session' ? 2 : 0;
+    const { path, dir, options } = parseScreenshotArgs(args.slice(index + 1), process.env);
+    const { data, ...value } = await request([...args.slice(0, index + 1), JSON.stringify(options)]);
+    if (value.unchanged) {
+      console.log(JSON.stringify(value, null, pretty ? 2 : 0));
+    } else {
+      const image = Buffer.from(data ?? '', 'base64');
+      const png = image.subarray(0, 4).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+      const jpeg = image[0] === 0xff && image[1] === 0xd8;
+      if (!(options.format === 'png' ? png : jpeg)) throw new Error(`Chrome did not return a ${options.format.toUpperCase()} image`);
+      const file = resolve(path ?? join(dir ?? join(tmpdir(), 'vacu-screenshots'),
+        screenshotFileName(options.format, new Date(), randomBytes(3).toString('hex'))));
+      await mkdir(dirname(file), { recursive: true, mode: 0o700 });
+      await writeFile(file, image, { mode: 0o600 });
+      console.log(JSON.stringify({ path: file, ...value }, null, pretty ? 2 : 0));
+    }
   } else {
     const index = args[0] === '--session' ? 2 : 0;
     const verb = args[index];

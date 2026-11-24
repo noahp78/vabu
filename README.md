@@ -46,7 +46,27 @@ Chrome and Firefox support `snapshot --within main --role link` (restricted CSS,
 
 In this staging copy, use `node cli.mjs help` for the new commands. Interaction adapters dispatch synthetic events to the approved main document; browser shortcuts, trusted typing and native drag-and-drop are not provided. Chrome and Firefox can inspect and click visible, unsandboxed same-origin iframes. Run `vacu frames`, then `vacu inspect-query --frame ID DOCUMENT_ID LOCATOR_JSON` and `vacu inspect-click --frame ID DOCUMENT_ID @iREF`. Use the returned `@i` ref only for that frame and document. Clicks are synthetic and never activate the tab; form submissions, new-tab links and cross-origin links are not supported. Re-run `frames` and query after navigation. Chrome can also inspect cross-origin HTTP(S) frames when it can verify the document chain and has every required host grant. Cross-origin clicks, frame typing and coordinate input are not supported.
 
-For inspection, pass a typed JSON locator such as `'{"all":[{"by":"role","value":"button"}]}'` or CSS shorthand such as `vacu inspect-query --brief '{"css":"[data-ctp-configurator] input[type=radio][name^=bundle_option]"}'` (`selector` is an alias for `css`). CSS supports tags, IDs, classes, descendant/child combinators, `[data-*]` presence and input type/name-prefix matching with simple tokens. Arbitrary attribute values and pseudo-classes are not supported. Adapter commands reject stale documents. Raster screenshots (including the legacy `screenshot` command) are disabled because Chrome cannot guarantee exclusion of pixels from unapproved frames. Session markers and audit are in memory; manual approval and handoff UI for file, clipboard and sign-in actions are not connected. No file, incognito, or browser-internal page permissions are added.
+For inspection, pass a typed JSON locator such as `'{"all":[{"by":"role","value":"button"}]}'` or CSS shorthand such as `vacu inspect-query --brief '{"css":"[data-ctp-configurator] input[type=radio][name^=bundle_option]"}'` (`selector` is an alias for `css`). CSS supports tags, IDs, classes, descendant/child combinators, `[data-*]` presence and input type/name-prefix matching with simple tokens. Arbitrary attribute values and pseudo-classes are not supported. Adapter commands reject stale documents. Session markers and audit are in memory; manual approval and handoff UI for file, clipboard and sign-in actions are not connected. No file, incognito, or browser-internal page permissions are added.
+
+## Screenshots (Chrome)
+
+`vacu screenshot [SELECTOR] [PATH]` saves a PNG or JPEG of the selected tab. It takes the same options as `agent-browser screenshot`:
+
+```sh
+vacu screenshot                          # viewport, saved to a temporary directory
+vacu screenshot ./page.png               # viewport, saved to ./page.png
+vacu screenshot --full ./full-page.jpg   # full page; format follows the extension
+vacu screenshot @r3 ./button.png         # one control from the latest snapshot
+vacu screenshot '.hero' ./hero.png       # one element (restricted CSS, must match exactly one visible element)
+vacu screenshot --annotate ./page.png    # takes a new snapshot and labels each control [N] = @rN
+vacu screenshot --if-changed             # don't write a file if nothing changed since the last capture
+vacu screenshot --threshold 0.01         # treat up to 1% changed pixels as unchanged (implies --if-changed)
+vacu screenshot --screenshot-dir ./shots --screenshot-format jpeg --screenshot-quality 70
+```
+
+Without `PATH`, files go to `--screenshot-dir`, `VACU_SCREENSHOT_DIR`, or `vacu-screenshots` in the system temp directory. `VACU_SCREENSHOT_FORMAT` and `VACU_SCREENSHOT_QUALITY` set defaults. Output is JSON: `path`, `format`, `annotations` (with `--annotate`), `clipped` (full pages are capped at 16384 CSS pixels per side) and `changedRatio`/`unchanged` (with `--if-changed`). `--json` is accepted for compatibility. Files are written with mode 0600, and an existing `PATH` is overwritten.
+
+Capture uses `Page.captureScreenshot` through the already-attached debugger, so background tabs are captured without being activated. The virtual cursor is hidden while capturing. Because a raster image includes every frame on the page, VACU lists all frames before and after the capture. It refuses if any frame is not an HTTP(S) document Chrome grants VACU access to (or an inherited `about:blank`/`about:srcdoc` frame). It discards the image if any frame document changed during capture. `data:`, extension (such as the PDF viewer) and other non-web frames therefore block screenshots of that page. `--if-changed` keeps the last image per tab in extension memory only. Firefox does not support `screenshot` yet.
 
 By default, access covers all HTTP(S) domains, including subdomains and localhost. The socket is only accessible to processes running as your user (or with OS privileges). A local process running as you could control any web tab Chrome grants VACU access to while the bridge is running. Stop the bridge when finished. Page content and screenshots can contain private information; don't publish them or authorize access to sensitive sites by default.
 

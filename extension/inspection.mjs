@@ -3,7 +3,7 @@ const refPattern = /^@i[\da-f-]{36}:[1-9]\d?$/;
 const only = (obj, keys) => obj && typeof obj === 'object' && !Array.isArray(obj)
   && Object.keys(obj).every((key) => keys.includes(key));
 
-function selector(input) {
+export function selector(input) {
   if (typeof input !== 'string' || input.length > 4096) throw new Error('Expected a bounded JSON locator');
   let spec;
   try { spec = JSON.parse(input); } catch { throw new Error('Invalid JSON locator'); }
