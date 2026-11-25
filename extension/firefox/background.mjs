@@ -1,4 +1,5 @@
 import { hasHostAccess, webUrl } from '../domains.js';
+import { handleFeedback, takeFeedback } from '../feedback.mjs';
 import { commands as interaction } from '../interaction.mjs';
 import { commands as inspection } from '../inspection.mjs';
 import { commands as scoped } from '../scoped-snapshot.mjs';
@@ -58,7 +59,12 @@ function start() {
 }
 
 browser.runtime.onMessage.addListener((message, sender) => {
-  if (sender.url !== browser.runtime.getURL('popup.html')) return false;
+  const fromPopup = sender.url === browser.runtime.getURL('popup.html');
+  if ((message.action === 'feedback-start' && fromPopup) || message.action === 'feedback-submit') {
+    return handleFeedback(browser, () => bridge?.online ? bridge : undefined, message, sender)
+      .catch((error) => ({ error: error.message }));
+  }
+  if (!fromPopup) return false;
   if (message.action === 'status') return Promise.resolve({ connected: bridge?.online === true });
   return (async () => {
     try {
@@ -190,6 +196,7 @@ async function waitForUrl(connection, s, terms) {
 async function command(connection, args) {
   if (!Array.isArray(args) || !args.length || !args.every((arg) => typeof arg === 'string')) throw new Error('Invalid command');
   const [verb, ...terms] = args;
+  if (verb === 'feedback') return takeFeedback(connection, terms);
   if (verb === 'status' && !terms.length) {
     const { origins: domains = [] } = await browser.permissions.getAll();
     return { connected: true, tab: selected?.id ?? null, domains };
