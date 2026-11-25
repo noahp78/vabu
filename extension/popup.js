@@ -52,4 +52,21 @@ for (const [decision, button] of decisions) {
   });
 }
 
+const feedback = document.querySelector('#feedback');
+feedback.addEventListener('click', async (event) => {
+  if (!event.isTrusted) return;
+  feedback.disabled = true;
+  const status = document.querySelector('#feedback-status');
+  status.textContent = '';
+  try {
+    const result = await chrome.runtime.sendMessage({ action: 'feedback-start' });
+    if (!result?.ok) throw new Error(result?.error || 'Unable to open feedback');
+    window.close();
+  } catch (error) {
+    status.textContent = error.message;
+  } finally {
+    feedback.disabled = false;
+  }
+});
+
 void update('status');

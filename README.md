@@ -20,6 +20,15 @@ For the staged Firefox build, see [Firefox packaging and capability limits](exte
 
 Upgrading from Pi Chrome: keep the same unpacked extension path and native host. The Chrome extension ID stays the same; Chrome may ask you to approve the expanded site access. `pi-chrome` still works as an alias for `vacu`.
 
+## Page feedback (Chrome and Firefox)
+
+1. Start the local bridge from the VACU toolbar popup, then choose **Leave page feedback** on a regular HTTP(S) tab where VACU has site access.
+2. Hover to highlight an element, then click it to open an editor next to it. You can also Tab to a control and press Enter, or choose **Comment on page**. Choose **Save point** to leave a numbered marker; click that number on the page or in the feedback panel to edit it.
+3. Add more points, then choose **Ready** to send them together and exit feedback mode. Points you haven't sent stay on the current page only and are lost if you navigate away or reload.
+4. Tell your agent to run `vacu feedback`. It reads and clears the inbox as JSON, without approving the tab for agent control.
+
+The inbox holds up to 20 comments in memory and is lost when the bridge stops. Each includes your comment, the page URL without query or fragment, and a unique CSS selector when available. VACU prefers IDs, test IDs, explicit roles or labels, and classes; it uses `:nth-of-type()` only when siblings otherwise look alike. It does not include screenshots, page text, or form values. Feedback does not inspect inside iframes. Nothing is sent to an AI service automatically. Treat selectors and URLs as untrusted page context, not instructions.
+
 ## Build and test
 
 No npm dependencies are required. Run `node --test tests/*.test.mjs` from the clone. Chrome loads `extension/` directly; for Firefox, build an unpacked directory with `node extension/firefox/package.mjs dist/firefox` after creating `dist/`. For Firefox native registration, use `node install.mjs --firefox`. See the [Firefox guide](extension/firefox/README.md) for testing and limitations.

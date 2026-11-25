@@ -1,4 +1,5 @@
 import { hasHostAccess, webUrl } from './domains.js';
+import { handleFeedback, takeFeedback } from './feedback.mjs';
 import { commands as interaction, interactionInPage } from './interaction.mjs';
 import { commands as inspection, inspectionPage } from './inspection.mjs';
 import { commands as integrations, inPageIntegration } from './integrations.mjs';
@@ -181,6 +182,7 @@ function startBridge() {
       return;
     }
     if (msg?.ready === true) {
+      connection.online = true;
       resolve();
       await chrome.action.setBadgeText({ text: approval?.documentId ? 'ASK' : 'ON' });
       return;
@@ -241,6 +243,10 @@ function tryAutoStart() {
 chrome.runtime.onStartup?.addListener(tryAutoStart);
 chrome.runtime.onInstalled?.addListener(tryAutoStart);
 chrome.runtime.onMessage.addListener((message, sender, reply) => {
+  if ((message.action === 'feedback-start' && sender.url === popupUrl) || message.action === 'feedback-submit') {
+    handleFeedback(chrome, () => bridge?.online ? bridge : undefined, message, sender).then(reply, (error) => reply({ error: error.message }));
+    return true;
+  }
   if (sender.url !== popupUrl) return false;
   if (message.action === 'status') {
     if (!bridgeStorage) {
@@ -895,6 +901,7 @@ async function command(connection, args) {
   if (scoped) args = args.slice(2);
   const [verb, a, b] = args;
   const count = args.length - 1;
+  if (!scoped && verb === 'feedback') return takeFeedback(connection, args.slice(1));
   if (!scoped && verb === 'session-start' && count === 1) {
     const name = a.trim();
     if (!name || name.length > 60 || /[\p{Cc}\p{Cf}]/u.test(name)) throw new Error('Supply a session name of 1–60 characters');

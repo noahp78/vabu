@@ -14,7 +14,7 @@ export async function stageFirefox(directory) {
   await mkdir(output); // Require a new directory; never overlay an existing extension.
   await mkdir(resolve(output, 'firefox'));
   await Promise.all([
-    ...['popup.html', 'popup.js', 'domains.js', 'interaction.mjs', 'inspection.mjs',
+    ...['popup.html', 'popup.js', 'domains.js', 'feedback.mjs', 'interaction.mjs', 'inspection.mjs',
       'scoped-snapshot.mjs', 'find-click.mjs', 'wait.mjs', 'get-element.mjs'].map((file) =>
       copyFile(new URL(`../${file}`, import.meta.url), resolve(output, file))),
     copyFile(new URL('./manifest.template.json', import.meta.url), resolve(output, 'manifest.json')),

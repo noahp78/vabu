@@ -10,6 +10,7 @@ import { privateDirectory, requestLimit, responseLimit, socketPath } from './soc
 
 const usage = `vacu status | tabs | use TAB_ID | release
 vacu open URL                  Open a background tab; run use TAB_ID before wait or snapshot
+vacu feedback                  Read and clear submitted page comments for the current bridge
 vacu snapshot                  Page text and control references
 vacu --pretty COMMAND ...      Indent JSON for human readers (default: compact)
 vacu [--session ID] snapshot --brief  Short page preview with clickable refs
