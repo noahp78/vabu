@@ -2,7 +2,23 @@
 
 A local browser extension and Node.js CLI for Chrome and Firefox. It uses Native Messaging and a user-private Unix socket; Chrome additionally uses `chrome.debugger`. No ChatGPT extension, MCP server, TCP listener or remote-debugging port is required. Native-host registration supports macOS and Linux. Windows is not supported yet.
 
-## Install and get started
+## Quick install
+
+Open [GitHub Releases](https://github.com/noahp78/vacu/releases) and download `install.sh` and `noahp78-vacu-*.tgz` **from the same release** into one folder. With Node.js 22+ and npm on macOS or Linux, run this from that folder:
+
+```sh
+sh install.sh              # Chrome: install the CLI and print the extension folder
+sh install.sh --firefox    # Firefox: install the CLI and register the bridge
+```
+
+The installer uses `~/.local`, without `sudo`. Use `~/.local/bin/vacu` if `vacu` isn't on your `PATH`. If you're upgrading an existing setup, stop the bridge first.
+
+- **Chrome:** Load the printed folder as an unpacked extension (or extract the separate `vacu-chrome-*.zip` and load that directory). Then register the extension ID once using the command the installer prints. There is no Chrome Web Store listing yet.
+- **Firefox:** Extract `vacu-firefox-*.zip` and load its `manifest.json` as a temporary add-on. The ZIP isn't a signed `.xpi` and must be loaded again after a browser restart.
+
+If there is no published release yet, build from source using the steps below.
+
+## Manual setup and troubleshooting
 
 ### 1. Check requirements
 
@@ -81,7 +97,11 @@ The inbox holds up to 20 comments in memory and is lost when the bridge stops. E
 
 No npm dependencies are required. Run `node --test tests/*.test.mjs` from the clone. Chrome loads `extension/` directly; for Firefox, build an unpacked directory with `node extension/firefox/package.mjs dist/firefox` after creating `dist/`. For Firefox native registration, use `node install.mjs --firefox`. See the [Firefox guide](extension/firefox/README.md) for testing and limitations.
 
-Build the distributable files locally with `sh scripts/build.sh`. It requires Node.js, npm, and `zip` and writes a Chrome ZIP, staged Firefox ZIP, and npm `.tgz` to a new `dist/release/` directory (or pass a new output directory). GitHub Actions runs tests on Linux and macOS and uploads the same files as `vacu-packages` on pull requests, `main`, version tags, and manual runs. A build does not publish to npm or either browser store. The Firefox ZIP is not signed by Mozilla.
+Build the distributable files locally with `sh scripts/build.sh`. It requires Node.js, npm, and `zip` and writes a Chrome ZIP, staged Firefox ZIP, npm `.tgz`, and `install.sh` to a new `dist/release/` directory (or pass a new output directory). GitHub Actions runs tests on Linux and macOS and uploads the same files as `vacu-packages` on pull requests, `main`, version tags, and manual runs.
+
+After a successful push to `main`, CI publishes a GitHub prerelease tagged `preview-<commit-sha>` with the four downloads. These previews do not replace the latest stable release. Pull requests build artifacts without creating a release.
+
+To prepare a stable release, keep the Chrome manifest, Firefox manifest template, and npm versions in sync. Push a signed version tag such as `v0.4.1` from the release commit. After tests pass, the workflow attaches the files to a **draft GitHub Release**. Review the notes and downloads, then publish the draft in GitHub. This doesn't publish to npm or either browser store.
 
 ## Example
 
