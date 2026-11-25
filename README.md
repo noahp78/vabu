@@ -1,18 +1,31 @@
 # VACU — Virtual Agentic Chrome User
 
-A local browser extension and Node.js CLI for Chrome and Firefox. It uses Native Messaging and a user-private Unix socket; Chrome additionally uses `chrome.debugger`. No ChatGPT extension, MCP server, TCP listener or remote-debugging port is required. Native-host registration currently targets macOS.
+A local browser extension and Node.js CLI for Chrome and Firefox. It uses Native Messaging and a user-private Unix socket; Chrome additionally uses `chrome.debugger`. No ChatGPT extension, MCP server, TCP listener or remote-debugging port is required. Native-host registration supports macOS and Linux. Windows is not supported yet.
 
-## Setup
+## Quick setup (Chrome on macOS or Linux)
 
-1. Clone the repository. In Chrome go to `chrome://extensions`, enable **Developer mode**, click **Load unpacked**, and select the `extension/` folder in the clone. Copy the new extension ID.
-2. In Terminal, register that exact ID:
+You need Node.js 22+ and npm. Install the verified VACU `.tgz` package, then ask VACU for the extension folder:
 
-   ```sh
-   node install.mjs CHROME_EXTENSION_ID
-   ```
+```sh
+npm install -g ./noahp78-vacu-0.4.1.tgz
+vacu setup
+```
 
-3. After registering the native host, open **VACU** from the Chrome Extensions menu to check bridge status. Chrome starts the bridge automatically; use **Start local bridge** if the host was registered after the first attempt. There is no per-domain approval in the popup; Chrome’s HTTP(S) site access settings still apply.
-4. Run `node cli.mjs status` from the clone. If you want the `vacu` command, symlink `cli.mjs` into a directory on your `PATH` under that name. Pi users can additionally install `SKILL.md` as a skill; it is not required for the CLI.
+If you only have a trusted checkout, run `npm pack` in it to create the `.tgz` first. Install the tarball rather than using `npx` for setup: Chrome and the native host need a permanent path, not an npm cache entry. No npm registry publication is required for this flow.
+
+1. In Chrome, open `chrome://extensions`, enable **Developer mode**, choose **Load unpacked**, and select the folder printed by `vacu setup`. Copy the new extension ID.
+2. Run `vacu setup CHROME_EXTENSION_ID`. Then open the VACU popup and choose **Start local bridge** if it isn't already running.
+3. Run `vacu status` to verify the connection. Chrome’s site access and VACU’s tab approval still apply.
+
+From a checkout you intend to keep, `node cli.mjs setup` and `node cli.mjs setup CHROME_EXTENSION_ID` work without a global install. The original `node install.mjs CHROME_EXTENSION_ID` also still works.
+
+### Install with an agent
+
+Give your agent the verified VACU tarball or a trusted checkout and paste:
+
+> Install VACU from this local package or checkout on macOS or Linux. Check Node.js 22+, create the tarball with `npm pack` if needed, and install it with `npm install -g <tarball>` without sudo. Run `vacu setup` and tell me the exact folder to load in Chrome. Wait for me to give you the extension ID; don't change browser settings or guess the ID. Ask before replacing an existing VACU installation or native-host registration. Register the ID with `vacu setup <ID>`, then tell me to open the VACU popup and start the bridge if needed. Verify with `vacu status` and report whether it's connected.
+
+Pi users can install `SKILL.md` for agent instructions after setup; the CLI works without it.
 
 **Stop local bridge** disconnects VACU and suppresses automatic restart for the rest of the Chrome session, even if the extension worker restarts. **Start local bridge** resumes it. You do not need to re-register a native host when updating with the same extension ID.
 
@@ -32,6 +45,8 @@ The inbox holds up to 20 comments in memory and is lost when the bridge stops. E
 ## Build and test
 
 No npm dependencies are required. Run `node --test tests/*.test.mjs` from the clone. Chrome loads `extension/` directly; for Firefox, build an unpacked directory with `node extension/firefox/package.mjs dist/firefox` after creating `dist/`. For Firefox native registration, use `node install.mjs --firefox`. See the [Firefox guide](extension/firefox/README.md) for testing and limitations.
+
+Build the distributable files locally with `sh scripts/build.sh`. It requires Node.js, npm, and `zip` and writes a Chrome ZIP, staged Firefox ZIP, and npm `.tgz` to a new `dist/release/` directory (or pass a new output directory). GitHub Actions runs tests on Linux and macOS and uploads the same files as `vacu-packages` on pull requests, `main`, version tags, and manual runs. A build does not publish to npm or either browser store. The Firefox ZIP is not signed by Mozilla.
 
 ## Example
 
@@ -79,4 +94,4 @@ Capture uses `Page.captureScreenshot` through the already-attached debugger, so 
 
 By default, access covers all HTTP(S) domains, including subdomains and localhost. The socket is only accessible to processes running as your user (or with OS privileges). A local process running as you could control any web tab Chrome grants VACU access to while the bridge is running. Stop the bridge when finished. Page content and screenshots can contain private information; don't publish them or authorize access to sensitive sites by default.
 
-If the extension reports a socket already in use, stop other VACU bridges first. After a crash, if no bridge is running, remove stale `~/.pi-chrome/chrome.sock` and try again. To uninstall, remove the unpacked extension, its host manifest (`~/Library/Application Support/Google/Chrome/NativeMessagingHosts/local.pi_chrome.json`), the CLI symlink, and the Pi skill.
+If the extension reports a socket already in use, stop other VACU bridges first. After a crash, if no bridge is running, remove stale `~/.pi-chrome/chrome.sock` and try again. To uninstall, remove the unpacked extension in the browser and delete the `local.pi_chrome.json` manifest from the path printed by setup. On Linux, VACU registers standard Google Chrome (`$XDG_CONFIG_HOME/google-chrome/NativeMessagingHosts`, defaulting to `~/.config`) and Firefox (`~/.mozilla/native-messaging-hosts`). Sandboxed Snap/Flatpak builds and other Chromium variants are not covered. Remove the npm package with `npm uninstall -g @noahp78/vacu` (or remove the CLI symlink if you installed manually) and remove the Pi skill if you added it.

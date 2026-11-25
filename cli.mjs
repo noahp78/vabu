@@ -4,11 +4,14 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { createConnection } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { runInNewContext } from 'node:vm';
 import { parseScreenshotArgs, screenshotFileName } from './screenshot-options.mjs';
 import { privateDirectory, requestLimit, responseLimit, socketPath } from './socket.mjs';
 
-const usage = `vacu status | tabs | use TAB_ID | release
+const usage = `vacu setup                     Print the unpacked Chrome extension folder
+vacu setup CHROME_EXTENSION_ID | --firefox  Register the native bridge on macOS or Linux
+vacu status | tabs | use TAB_ID | release
 vacu open URL                  Open a background tab; run use TAB_ID before wait or snapshot
 vacu feedback                  Read and clear submitted page comments for the current bridge
 vacu snapshot                  Page text and control references
@@ -109,6 +112,14 @@ function filterControls({ title, controls }, { role, term = '', regex }) {
 try {
   if (!args.length || ['help', '--help', '-h'].includes(args[0])) {
     console.log(usage);
+  } else if (args[0] === 'setup') {
+    if (args.length === 1) {
+      console.log(fileURLToPath(new URL('./extension', import.meta.url)));
+    } else {
+      if (args.length !== 2) throw new Error('Usage: vacu setup CHROME_EXTENSION_ID | --firefox');
+      const { registerHost } = await import('./install.mjs');
+      console.log('Registered ' + registerHost(args[1]));
+    }
   } else if (args[args[0] === '--session' ? 2 : 0] === 'screenshot') {
     const index = args[0] === '--session' ? 2 : 0;
     const { path, dir, options } = parseScreenshotArgs(args.slice(index + 1), process.env);

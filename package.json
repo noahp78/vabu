@@ -1,0 +1,17 @@
+{
+  "name": "@noahp78/vacu",
+  "version": "0.4.1",
+  "description": "Local browser bridge and CLI for Chrome and Firefox",
+  "license": "MIT",
+  "bin": { "vacu": "cli.mjs" },
+  "engines": { "node": ">=22" },
+  "files": [
+    "cli.mjs",
+    "install.mjs",
+    "native.mjs",
+    "screenshot-options.mjs",
+    "socket.mjs",
+    "extension/",
+    "SKILL.md"
+  ]
+}
