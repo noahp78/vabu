@@ -12,16 +12,42 @@ if ! command -v npm >/dev/null || ! node -e 'process.exit(Number(process.version
   exit 1
 fi
 
-# Keep the installer and its matching archive together.
+# Use an adjacent archive for offline installs; otherwise fetch a published release.
 cd "$(dirname "$0")"
 set_archive() {
-  if [ "$#" -ne 1 ] || [ ! -f "$1" ]; then
-    echo 'Put exactly one noahp78-vacu-*.tgz from the same GitHub release next to install.sh.' >&2
+  if [ "$#" -eq 1 ] && [ -f "$1" ]; then
+    archive=$1
+  elif [ "$#" -ne 1 ]; then
+    echo 'Keep at most one noahp78-vacu-*.tgz next to install.sh.' >&2
     exit 1
   fi
-  archive=$1
 }
+archive=
 set_archive ./noahp78-vacu-*.tgz
+if [ -z "$archive" ]; then
+  temp=$(mktemp -d)
+  trap 'rm -rf "$temp"' EXIT
+  curl -fsSL 'https://api.github.com/repos/noahp78/vacu/releases?per_page=100' -o "$temp/releases.json"
+  url=$(node --input-type=module - "$temp/releases.json" <<'JS'
+import { readFileSync } from 'node:fs';
+const releases = JSON.parse(readFileSync(process.argv[2], 'utf8'));
+const packages = releases.filter(({ draft }) => !draft).map((release) => ({
+  ...release, asset: release.assets.find(({ name }) => /^noahp78-vacu-[\w.-]+\.tgz$/.test(name)),
+})).filter(({ asset }) => asset);
+const release = packages.find(({ prerelease }) => !prerelease)
+  ?? packages.find(({ tag_name }) => /^preview-[a-f0-9]{40}$/.test(tag_name));
+const asset = release?.asset;
+if (!asset) {
+  console.error('No VACU tarball found. Check https://github.com/noahp78/vacu/releases or build from source.');
+  process.exit(1);
+}
+console.log(`https://github.com/noahp78/vacu/releases/download/${encodeURIComponent(release.tag_name)}/${asset.name}`);
+JS
+  )
+  archive="$temp/${url##*/}"
+  printf 'Downloading %s\n' "$url"
+  curl -fsSL "$url" -o "$archive"
+fi
 prefix="$HOME/.local"
 npm install --global --prefix "$prefix" --ignore-scripts "$archive"
 cli="$prefix/bin/vacu"

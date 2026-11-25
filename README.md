@@ -4,12 +4,14 @@ A local browser extension and Node.js CLI for Chrome and Firefox. It uses Native
 
 ## Quick install
 
-Open [GitHub Releases](https://github.com/noahp78/vacu/releases) and download `install.sh` and `noahp78-vacu-*.tgz` **from the same release** into one folder. With Node.js 22+ and npm on macOS or Linux, run this from that folder:
+Download `install.sh` from [GitHub Releases](https://github.com/noahp78/vacu/releases). With Node.js 22+, npm and `curl` on macOS or Linux, run:
 
 ```sh
 sh install.sh              # Chrome: install the CLI and print the extension folder
 sh install.sh --firefox    # Firefox: install the CLI and register the bridge
 ```
+
+The installer downloads the CLI tarball from the latest published stable release with a package, or from the latest preview if no stable package exists. For offline installation or to pin a version, put that release's `noahp78-vacu-*.tgz` next to `install.sh` before running it.
 
 The installer uses `~/.local`, without `sudo`. Use `~/.local/bin/vacu` if `vacu` isn't on your `PATH`. If you're upgrading an existing setup, stop the bridge first.
 
