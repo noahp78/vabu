@@ -1,18 +1,66 @@
 # VACU — Virtual Agentic Chrome User
 
-A local browser extension and Node.js CLI for Chrome and Firefox. It uses Native Messaging and a user-private Unix socket; Chrome additionally uses `chrome.debugger`. No ChatGPT extension, MCP server, TCP listener or remote-debugging port is required. Native-host registration currently targets macOS.
+A local browser extension and Node.js CLI for Chrome and Firefox. It uses Native Messaging and a user-private Unix socket; Chrome additionally uses `chrome.debugger`. No ChatGPT extension, MCP server, TCP listener or remote-debugging port is required. Native-host registration supports macOS and Linux. Windows is not supported yet.
 
-## Setup
+## Install and get started
 
-1. Clone the repository. In Chrome go to `chrome://extensions`, enable **Developer mode**, click **Load unpacked**, and select the `extension/` folder in the clone. Copy the new extension ID.
-2. In Terminal, register that exact ID:
+### 1. Check requirements
 
-   ```sh
-   node install.mjs CHROME_EXTENSION_ID
-   ```
+- **macOS or Linux**, with Node.js 22+ and npm. Check with `node --version` and `npm --version`.
+- **Google Chrome 124+** is the recommended browser. Firefox 128+ is available as an unsigned, temporary add-on. Windows, Snap and Flatpak browser builds, and other Chromium variants are not covered by this setup.
+- You need both the browser extension and the local CLI/bridge. Installing the CLI alone does not install the browser extension.
 
-3. After registering the native host, open **VACU** from the Chrome Extensions menu to check bridge status. Chrome starts the bridge automatically; use **Start local bridge** if the host was registered after the first attempt. There is no per-domain approval in the popup; Chrome’s HTTP(S) site access settings still apply.
-4. Run `node cli.mjs status` from the clone. If you want the `vacu` command, symlink `cli.mjs` into a directory on your `PATH` under that name. Pi users can additionally install `SKILL.md` as a skill; it is not required for the CLI.
+### 2. Download or build the package
+
+If a successful [GitHub Actions run](https://github.com/noahp78/vacu/actions/workflows/build.yml) offers a **vacu-packages** artifact, download and extract it. Use the `noahp78-vacu-*.tgz` file; it already contains the unpacked Chrome extension, so you do not need the separate Chrome ZIP for this setup.
+
+If no artifact is available, build the package from the installation branch:
+
+```sh
+git clone --branch feat/easy-install https://github.com/noahp78/vacu.git
+cd vacu
+npm pack
+```
+
+Install the resulting tarball from the folder where you extracted or built it (adjust the filename if the version differs):
+
+```sh
+npm install -g ./noahp78-vacu-0.4.1.tgz
+vacu setup
+```
+
+`vacu setup` prints the extension folder. Keep the installation in place: Chrome and the bridge need a stable path, so don't use `npx` to register the host. If global npm installation isn't available, use `node cli.mjs setup` in a checkout you plan to keep, and substitute `node cli.mjs` for `vacu` in the examples below.
+
+### 3. Connect Chrome
+
+1. Open `chrome://extensions`, turn on **Developer mode**, click **Load unpacked**, and select the folder printed by `vacu setup` (on macOS, `⌘⇧G` opens the folder path field).
+2. Copy the extension's **ID** and run `vacu setup CHROME_EXTENSION_ID`, replacing `CHROME_EXTENSION_ID` with the copied value. This registers the bridge for that exact extension ID. The original `node install.mjs CHROME_EXTENSION_ID` also works from a checkout.
+3. Open the **VACU** popup from Chrome's Extensions menu. Click **Start local bridge** if it isn't running. Run `vacu status` in Terminal and look for `"connected":true`.
+
+### Firefox instead
+
+Use the `vacu-firefox-*.zip` artifact or follow the [Firefox build guide](extension/firefox/README.md) to create an unpacked copy. In Firefox, open `about:debugging#/runtime/this-firefox`, click **Load Temporary Add-on**, and select the extracted `manifest.json`. Run `vacu setup --firefox`, then open the VACU popup and click **Start local bridge**. Verify with `vacu status`. Temporary add-ons need to be loaded again after restarting Firefox. Stop the Chrome bridge first if it's running.
+
+### First use with an AI agent
+
+Try: “Use VACU to open `https://example.com`, take a snapshot, and tell me the page heading.” To work on an existing Chrome tab, the agent can list tabs with `vacu tabs` and request access with `vacu use TAB_ID`. If prompted, approve the tab from the VACU popup and ask the agent to retry. If you'd rather flag issues yourself, see [page feedback](#page-feedback-chrome-and-firefox).
+
+### Troubleshooting
+
+| Problem | What to check |
+| --- | --- |
+| `vacu: command not found` | Make sure your global npm executable directory is on `PATH`, or use `node cli.mjs` from the checkout. |
+| Chrome can't find the native host | Re-run `vacu setup` with the ID shown on the extension card and make sure the package hasn't been moved or removed. |
+| `vacu status` can't connect | Start the bridge from the popup. If the socket is in use, stop the other VACU bridge before trying again. |
+| A tab isn't listed or can't be controlled | Use an ordinary HTTP(S) tab and check browser site access. On Chrome, existing tabs require approval; navigation can require fresh approval. |
+
+### Install with an agent
+
+Give your agent the verified VACU tarball or a trusted checkout and paste:
+
+> Install VACU from this local package or checkout on macOS or Linux. Check Node.js 22+, create the tarball with `npm pack` if needed, and install it with `npm install -g <tarball>` without sudo. Run `vacu setup` and tell me the exact folder to load in Chrome. Wait for me to give you the extension ID; don't change browser settings or guess the ID. Ask before replacing an existing VACU installation or native-host registration. Register the ID with `vacu setup <ID>`, then tell me to open the VACU popup and start the bridge if needed. Verify with `vacu status` and report whether it's connected.
+
+Pi users can install `SKILL.md` for agent instructions after setup; the CLI works without it.
 
 **Stop local bridge** disconnects VACU and suppresses automatic restart for the rest of the Chrome session, even if the extension worker restarts. **Start local bridge** resumes it. You do not need to re-register a native host when updating with the same extension ID.
 
@@ -32,6 +80,8 @@ The inbox holds up to 20 comments in memory and is lost when the bridge stops. E
 ## Build and test
 
 No npm dependencies are required. Run `node --test tests/*.test.mjs` from the clone. Chrome loads `extension/` directly; for Firefox, build an unpacked directory with `node extension/firefox/package.mjs dist/firefox` after creating `dist/`. For Firefox native registration, use `node install.mjs --firefox`. See the [Firefox guide](extension/firefox/README.md) for testing and limitations.
+
+Build the distributable files locally with `sh scripts/build.sh`. It requires Node.js, npm, and `zip` and writes a Chrome ZIP, staged Firefox ZIP, and npm `.tgz` to a new `dist/release/` directory (or pass a new output directory). GitHub Actions runs tests on Linux and macOS and uploads the same files as `vacu-packages` on pull requests, `main`, version tags, and manual runs. A build does not publish to npm or either browser store. The Firefox ZIP is not signed by Mozilla.
 
 ## Example
 
@@ -79,4 +129,4 @@ Capture uses `Page.captureScreenshot` through the already-attached debugger, so 
 
 By default, access covers all HTTP(S) domains, including subdomains and localhost. The socket is only accessible to processes running as your user (or with OS privileges). A local process running as you could control any web tab Chrome grants VACU access to while the bridge is running. Stop the bridge when finished. Page content and screenshots can contain private information; don't publish them or authorize access to sensitive sites by default.
 
-If the extension reports a socket already in use, stop other VACU bridges first. After a crash, if no bridge is running, remove stale `~/.pi-chrome/chrome.sock` and try again. To uninstall, remove the unpacked extension, its host manifest (`~/Library/Application Support/Google/Chrome/NativeMessagingHosts/local.pi_chrome.json`), the CLI symlink, and the Pi skill.
+If the extension reports a socket already in use, stop other VACU bridges first. After a crash, if no bridge is running, remove stale `~/.pi-chrome/chrome.sock` and try again. To uninstall, remove the unpacked extension in the browser and delete the `local.pi_chrome.json` manifest from the path printed by setup. On Linux, VACU registers standard Google Chrome (`$XDG_CONFIG_HOME/google-chrome/NativeMessagingHosts`, defaulting to `~/.config`) and Firefox (`~/.mozilla/native-messaging-hosts`). Sandboxed Snap/Flatpak builds and other Chromium variants are not covered. Remove the npm package with `npm uninstall -g @noahp78/vacu` (or remove the CLI symlink if you installed manually) and remove the Pi skill if you added it.
