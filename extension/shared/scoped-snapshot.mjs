@@ -16,9 +16,9 @@ export const commands = {
 // Self-contained for isolated-world injection into the checked top document.
 export function scopedSnapshotInPage(origin, overlayKey, operation, payload, expected, ticket) {
   try {
-    const state = globalThis.piChrome;
+    const state = globalThis.vabuCursorState;
     const assertDocument = () => {
-      if (window !== window.top || location.origin !== origin || globalThis.piChrome !== state
+      if (window !== window.top || location.origin !== origin || globalThis.vabuCursorState !== state
         || !state || state.key !== overlayKey || !state.host?.isConnected || state.host.ownerDocument !== document) {
         throw new Error('Snapshot document changed');
       }

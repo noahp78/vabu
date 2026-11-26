@@ -1,22 +1,42 @@
-import { hasHostAccess, webUrl } from './domains.js';
+import { webUrl } from './domains.js';
 
-export async function handleFeedback(api, currentBridge, message, sender) {
-  const connection = currentBridge();
-  if (!connection) throw new Error('Start the local bridge in the VACU popup first');
+export async function handleFeedback(api, connection, getScope, message, sender) {
+  if (sender.id !== api.runtime.id) throw new Error('Invalid VABU feedback sender');
+  if (!connection?.online) throw new Error('Start the local bridge in the VABU popup first');
   if (message.action === 'feedback-start') {
+    if (sender.tab || sender.url !== api.runtime.getURL('shared/popup.html')) throw new Error('Use the VABU popup to open feedback');
+    const scope = await getScope();
     const [tab] = await api.tabs.query({ active: true, currentWindow: true });
-    if (!tab?.id || tab.incognito) throw new Error('Open a regular web tab to leave feedback');
-    const url = webUrl(tab.url);
-    if (!await hasHostAccess(api.permissions, url)) throw new Error('Grant VACU site access first');
-    if (currentBridge() !== connection) throw new Error('The bridge restarted; reopen feedback');
-    await api.scripting.executeScript({ target: { tabId: tab.id }, func: feedbackInPage, args: [url.href] });
-    return { ok: true };
+    if (tab?.id !== scope.id || tab.incognito) throw new Error('Switch to the selected VABU tab to leave feedback');
+    if ((await scope.verify()).active !== true) throw new Error('The selected tab is no longer active');
+    scope.assertCurrent();
+    const token = crypto.randomUUID();
+    const lease = connection.feedbackLease = { scope, token };
+    try {
+      const results = await api.scripting.executeScript({ target: { tabId: scope.id, documentIds: [scope.documentId] },
+        world: 'ISOLATED', func: feedbackInPage, args: [scope.href, token] });
+      if (results?.length !== 1 || results[0].documentId !== scope.documentId || results[0].frameId !== 0
+        || results[0].result !== true) throw new Error('Could not open feedback on the selected document');
+      await scope.verify();
+      if (connection.feedbackLease !== lease) throw new Error('Feedback was replaced');
+      scope.assertCurrent();
+      return { ok: true };
+    } catch (error) {
+      if (connection.feedbackLease === lease) delete connection.feedbackLease;
+      throw error;
+    }
   }
 
-  if (sender.id !== api.runtime.id || sender.frameId !== 0 || !sender.tab?.id || sender.tab.incognito) {
-    throw new Error('Feedback must come from the main page');
+  const lease = connection.feedbackLease;
+  const scope = lease?.scope;
+  // The one-time token only exists in the exact isolated world we injected into.
+  // Firefox need not expose sender.documentId; check it as well when present.
+  if (!scope || message.token !== lease.token || sender.frameId !== 0 || sender.tab?.id !== scope.id
+    || sender.tab.incognito || sender.url !== scope.href
+    || (sender.documentId !== undefined && sender.documentId !== scope.documentId)) {
+    throw new Error('Feedback must come from the current selected document');
   }
-  const url = webUrl(sender.url);
+  const url = webUrl(scope.href);
   const page = url.origin + url.pathname;
   if (page.length > 4000) throw new Error('Page URL is too long to include in feedback');
   const { points } = message;
@@ -25,25 +45,25 @@ export async function handleFeedback(api, currentBridge, message, sender) {
     !(point.target === null || (typeof point.target === 'string' && point.target.length > 0 && point.target.length <= 500)))) {
     throw new Error('Invalid feedback');
   }
-  if (!await hasHostAccess(api.permissions, url) || (await api.tabs.get(sender.tab.id)).url !== url.href) {
-    throw new Error('Page changed or VACU site access was revoked');
-  }
-  if (currentBridge() !== connection) throw new Error('The bridge restarted; try sending again');
-  const inbox = connection.feedback ??= [];
-  if (inbox.length + points.length > 20) throw new Error('Inbox full. Ask your agent to run vacu feedback, then retry.');
+  await scope.verify();
+  if (connection.feedbackLease !== lease) throw new Error('Feedback was replaced or already submitted');
+  scope.assertCurrent();
+  const inbox = scope.owner.feedback ??= [];
+  if (inbox.length + points.length > 20) throw new Error('Inbox full. Run vabu feedback for this workspace, then retry.');
+  delete connection.feedbackLease;
   inbox.push(...points.map(({ target, note }) => ({ page, target, note: note.trim() })));
   return { ok: true };
 }
 
-export function takeFeedback(connection, terms) {
-  if (terms.length) throw new Error('Usage: vacu feedback');
-  return { feedback: connection.feedback?.splice(0) ?? [] };
+export function takeFeedback(owner, terms) {
+  if (terms.length) throw new Error('Usage: vabu feedback');
+  return { feedback: owner.feedback?.splice(0) ?? [] };
 }
 
 // executeScript serializes this function into the extension's isolated world.
-function feedbackInPage(href) {
-  if (location.href !== href) throw new Error('The active page changed; reopen feedback');
-  if (globalThis.vacuFeedback?.isConnected) return;
+function feedbackInPage(href, token) {
+  if (window !== window.top || document.hidden || location.href !== href || globalThis.origin !== location.origin) return false;
+  globalThis.vabuFeedback?.();
   const host = document.createElement('div');
   const shadow = host.attachShadow({ mode: 'closed' });
   const sheet = new CSSStyleSheet();
@@ -87,9 +107,9 @@ function feedbackInPage(href) {
   const picker = add(shadow, 'section');
   picker.id = 'picker';
   picker.setAttribute('popover', 'manual');
-  picker.setAttribute('aria-label', 'VACU feedback mode');
-  add(picker, 'h2', 'VACU feedback');
-  add(picker, 'p', 'Click an element, or Tab to a control and press Enter. Ready sends your points to the local VACU inbox.');
+  picker.setAttribute('aria-label', 'VABU feedback mode');
+  add(picker, 'h2', 'VABU feedback');
+  add(picker, 'p', 'Click an element, or Tab to a control and press Enter. Ready sends your points to the local VABU inbox.');
   const pointList = add(picker, 'div');
   pointList.id = 'point-list';
   const wholePage = add(picker, 'button', 'Comment on page');
@@ -120,24 +140,22 @@ function feedbackInPage(href) {
   function cleanup() {
     listeners.abort();
     host.remove();
+    if (globalThis.vabuFeedback === cleanup) delete globalThis.vabuFeedback;
   }
   function describe(element) {
     const unique = (selector) => {
-      if (selector.length > 500) return false;
+      if (selector.length > 256) return false;
       const matches = document.querySelectorAll(selector);
       return matches.length === 1 && matches[0] === element;
     };
     let suffix = '';
     for (let node = element; node && node !== document.documentElement; node = node.parentElement) {
-      const tag = CSS.escape(node.localName);
+      const tag = node.localName;
+      if (!/^[a-z][\w-]*$/i.test(tag)) return null;
       const options = [];
-      if (node.id && node.id.length <= 80) options.push('#' + CSS.escape(node.id));
-      for (const attr of ['data-testid', 'role', 'aria-label']) {
-        const value = node.getAttribute(attr);
-        if (value && value.length <= 80) options.push(`[${attr}=${CSS.escape(value)}]`);
-      }
+      if (/^[a-z_][\w-]{0,79}$/i.test(node.id)) options.push('#' + node.id);
       const classes = Array.from(node.classList).filter((name) => /^[a-z][\w-]{0,59}$/i.test(name)).slice(0, 3);
-      const classSelectors = classes.map((name) => `.${CSS.escape(name)}`);
+      const classSelectors = classes.map((name) => `.${name}`);
       options.push(...classSelectors.map((name) => tag + name));
       if (classSelectors.length > 1) options.push(tag + classSelectors.join(''));
       options.push(tag);
@@ -145,13 +163,10 @@ function feedbackInPage(href) {
         if (unique(option + suffix)) return option + suffix;
       }
       const siblings = Array.from(node.parentElement.children);
-      let segment = options.find((option) => siblings.filter((sibling) => sibling.matches(option)).length === 1);
-      if (!segment) {
-        const index = siblings.filter((sibling) => sibling.localName === node.localName).indexOf(node) + 1;
-        segment = `${tag}:nth-of-type(${index})`;
-      }
+      const segment = options.find((option) => siblings.filter((sibling) => sibling.matches(option)).length === 1);
+      if (!segment) return null;
       suffix = ` > ${segment}${suffix}`;
-      if (suffix.length > 500) return null;
+      if (suffix.length > 256) return null;
     }
     const rooted = `html${suffix}`;
     return unique(rooted) ? rooted : null;
@@ -245,7 +260,7 @@ function feedbackInPage(href) {
     status.textContent = 'Sending feedback…';
     try {
       const result = await (globalThis.browser ?? chrome).runtime.sendMessage({
-        action: 'feedback-submit', points: points.map(({ note, target }) => ({ note, target })),
+        action: 'feedback-submit', token, points: points.map(({ note, target }) => ({ note, target })),
       });
       if (!result?.ok) throw new Error(result?.error || 'Feedback was not sent');
       cleanup();
@@ -256,7 +271,8 @@ function feedbackInPage(href) {
     }
   };
 
-  const pageTarget = (event) => host.isConnected && event.isTrusted && event.target !== host && event.target instanceof Element;
+  const pageTarget = (event) => host.isConnected && event.isTrusted && location.href === href
+    && event.target !== host && event.target instanceof Element;
   const on = (type, fn) => window.addEventListener(type, fn, { capture: true, signal: listeners.signal });
   on('pointermove', (event) => {
     outline.hidden = Boolean(draft) || sending || !pageTarget(event);
@@ -285,13 +301,19 @@ function feedbackInPage(href) {
     if (!host.isConnected || !event.isTrusted) return;
     if (event.target === host) {
       isolateFeedbackKey(event);
-      if (event.key === 'Escape' && draft && !event.isComposing) {
+      if (event.key === 'Escape' && !sending && !event.isComposing) {
         event.preventDefault();
-        closeEditor();
+        if (draft) closeEditor();
+        else cleanup();
       }
       return;
     }
-    if (event.key === 'Escape' && draft && !event.isComposing) { intercept(event); closeEditor(); }
+    if (event.key === 'Escape' && !sending && !event.isComposing) {
+      if (pageTarget(event)) intercept(event);
+      if (draft) closeEditor();
+      else cleanup();
+      return;
+    }
     if (event.key === 'Enter' && pageTarget(event) && event.target !== document.body) {
       intercept(event);
       compose(event.target, event.target);
@@ -299,8 +321,9 @@ function feedbackInPage(href) {
   });
   on('pagehide', cleanup);
   document.documentElement.append(host);
-  globalThis.vacuFeedback = host;
+  globalThis.vabuFeedback = cleanup;
   pins.showPopover();
   picker.showPopover();
-  wholePage.focus();
+  wholePage.focus({ preventScroll: true });
+  return true;
 }

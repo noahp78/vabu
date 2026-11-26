@@ -1,7 +1,7 @@
 // Packaged as a classic isolated content script, with the shared page functions inlined.
-export function install(interactionInPage, inspectionPage, scopedSnapshotInPage, waitTextInPage, getElementInPage, frameInspection, inspectFrame) {
-  if (window !== window.top || globalThis.vacuFirefoxInstalled) return;
-  globalThis.vacuFirefoxInstalled = true;
+export function install(interactionInPage, inspectionPage, scopedSnapshotInPage, waitTextInPage, getElementInPage) {
+  if (window !== window.top || globalThis.vabuFirefoxInstalled) return;
+  globalThis.vabuFirefoxInstalled = true;
   let active;
   let closeActive;
   const css = (node, properties) => {
@@ -14,20 +14,17 @@ export function install(interactionInPage, inspectionPage, scopedSnapshotInPage,
   };
 
   browser.runtime.onConnect.addListener((port) => {
-    if (port.name !== 'vacu-selected-document' || port.sender?.id !== browser.runtime.id || port.sender?.tab) return;
+    if (port.name !== 'vabu-selected-document' || port.sender?.id !== browser.runtime.id || port.sender?.tab) return;
     closeActive?.();
     active = port;
     let state;
-    let frames;
-    const lifetime = new AbortController();
     const disconnect = closeActive = () => { clear(); port.disconnect(); };
     function clear() {
       if (active !== port) return;
       active = closeActive = undefined;
-      lifetime.abort();
       state?.host.remove();
-      delete globalThis.piChrome;
-      delete globalThis.vacuInspectionState;
+      delete globalThis.vabuCursorState;
+      delete globalThis.vabuInspectionState;
       removeEventListener('pagehide', disconnect);
       removeEventListener('hashchange', disconnect);
       removeEventListener('popstate', disconnect);
@@ -59,8 +56,7 @@ export function install(interactionInPage, inspectionPage, scopedSnapshotInPage,
           transform: `translate(${innerWidth / 2 - 12}px, ${innerHeight / 2 - 12}px)` });
         host.attachShadow({ mode: 'closed' }).append(cursor);
         document.documentElement.append(host);
-        state = globalThis.piChrome = { key, href, origin, host, cursor, title: () => document.title };
-        frames = frameInspection(origin, key, lifetime.signal, inspectFrame);
+        state = globalThis.vabuCursorState = { key, href, origin, host, cursor, title: () => document.title };
         return ok(true);
       }
       assertCurrent();
@@ -99,8 +95,6 @@ export function install(interactionInPage, inspectionPage, scopedSnapshotInPage,
         }
         case 'interaction': return interactionInPage(state.origin, state.key, ...args);
         case 'inspect': return inspectionPage(state.origin, state.key, ...args);
-        case 'frames': return ok(frames.frames());
-        case 'inspectFrame': return frames.run(...args);
         case 'waitCursor': {
           if (document.hidden) return ok(false);
           let raf;

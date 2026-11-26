@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
-import { commands, inPageIntegration } from '../extension/integrations.mjs';
+import { commands, inPageIntegration } from '../extension/chrome/integrations.mjs';
 
 const origin = 'https://approved.example';
 const current = async () => {};

@@ -17,7 +17,7 @@ export function getElementInPage(origin, overlayKey, property, ref) {
   const ok = (value) => ({ ok: true, value });
   if (!['text', 'href'].includes(property)) return fail('Unsupported element property');
   if (!/^@r[1-9]\d{0,2}$/.test(ref)) return fail('Invalid snapshot reference');
-  const state = globalThis.piChrome;
+  const state = globalThis.vabuCursorState;
   if (window !== window.top || !/^https?:$/.test(location.protocol) || location.origin !== origin
     || globalThis.origin !== origin || !overlayKey || state?.key !== overlayKey
     || !state.host?.isConnected || state.host.ownerDocument !== document) {

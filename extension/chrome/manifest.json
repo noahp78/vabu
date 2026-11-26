@@ -1,0 +1,40 @@
+{
+  "manifest_version": 3,
+  "name": "VABU \u2014 Virtual Agentic Browser User",
+  "version": "0.4.1",
+  "minimum_chrome_version": "124",
+  "description": "Let VABU control HTTP(S) tabs while the local bridge is running.",
+  "incognito": "not_allowed",
+  "permissions": [
+    "scripting",
+    "debugger",
+    "nativeMessaging",
+    "tabGroups",
+    "storage",
+    "webNavigation"
+  ],
+  "host_permissions": [
+    "http://*/*",
+    "https://*/*"
+  ],
+  "background": {
+    "service_worker": "chrome/worker.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "VABU",
+    "default_popup": "shared/popup.html",
+    "default_icon": {
+      "16": "shared/icons/vabu-16.png",
+      "32": "shared/icons/vabu-32.png",
+      "48": "shared/icons/vabu-48.png",
+      "128": "shared/icons/vabu-128.png"
+    }
+  },
+  "icons": {
+    "16": "shared/icons/vabu-16.png",
+    "32": "shared/icons/vabu-32.png",
+    "48": "shared/icons/vabu-48.png",
+    "128": "shared/icons/vabu-128.png"
+  }
+}

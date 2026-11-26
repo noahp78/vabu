@@ -1,15 +1,20 @@
-import { hasHostAccess, webUrl } from './domains.js';
-import { handleFeedback, takeFeedback } from './feedback.mjs';
-import { commands as interaction, interactionInPage } from './interaction.mjs';
-import { commands as inspection, inspectionPage } from './inspection.mjs';
+import { hasHostAccess, webUrl } from '../shared/domains.js';
+import { setBridgeIcon } from '../shared/toolbar.mjs';
+import { defaultSocketNames, socketNameError, validSocketName } from '../shared/socket-name.mjs';
+import { commands as interaction, interactionInPage } from '../shared/interaction.mjs';
+import { commands as inspection, inspectionPage, isFrameInspection, runListedFrameInspection } from '../shared/inspection.mjs';
 import { commands as integrations, inPageIntegration } from './integrations.mjs';
 import { commands as sessions, browserWideCommands, createSessionState } from './sessions.mjs';
 
-import { commands as elementCommands, getElementInPage } from './get-element.mjs';
-import { commands as waitCommands, waitTextInPage } from './wait.mjs';
-import { commands as scopedCommands, scopedSnapshotInPage } from './scoped-snapshot.mjs';
-import { commands as findCommands } from './find-click.mjs';
-import { changedRatio, clampClip, frameFingerprint, maxImageBase64, screenshotInPage, screenshotRequest } from './screenshot.mjs';
+import { commands as elementCommands, getElementInPage } from '../shared/get-element.mjs';
+import { commands as waitCommands, waitTextInPage } from '../shared/wait.mjs';
+import { commands as scopedCommands, scopedSnapshotInPage } from '../shared/scoped-snapshot.mjs';
+import { commands as findCommands } from '../shared/find-click.mjs';
+import { canReadFrames, createFrameScope } from './frame-read.mjs';
+import { captureOwnedViewport } from './owned-capture.mjs';
+import { captureOptions, captureResponse } from '../shared/capture-jpeg.mjs';
+import { createOwnedDialog } from './owned-dialog.mjs';
+import { handleFeedback, takeFeedback } from '../shared/feedback.mjs';
 
 const adapterCommands = { __proto__: null, ...interaction, ...inspection, ...integrations, ...elementCommands, ...waitCommands, ...scopedCommands, ...findCommands };
 for (const verb of ['url', 'tab-info', 'session-start', 'session-handoff', 'session-restore', ...browserWideCommands]) {
@@ -18,15 +23,16 @@ for (const verb of ['url', 'tab-info', 'session-start', 'session-handoff', 'sess
 const integrationOperations = new Set(['integration-inspect', 'integration-assets', 'integration-export-available']);
 
 let bridge;
-const bridgeStorage = chrome.storage?.session;
+let bridgeError;
+const bridgeStorage = chrome.storage.session;
 let bridgeTransition = Promise.resolve();
 let bridgeIntent = 0;
 let session;
 let detaching = Promise.resolve();
-const idleGroupTitle = 'VACU';
-const activeGroupTitle = 'VACU actief';
+const idleGroupTitle = 'VABU';
+const activeGroupTitle = 'VABU actief';
 const approvalLifetime = 60_000;
-const popupUrl = chrome.runtime.getURL('popup.html');
+const popupUrl = chrome.runtime.getURL('shared/popup.html');
 const navigation = chrome.webNavigation;
 const canCheckDocument = typeof navigation?.getFrame === 'function'
   && navigation.onBeforeNavigate && navigation.onCommitted && chrome.runtime.onConnect;
@@ -44,7 +50,7 @@ function clearApproval(state = 'cancelled') {
   clearTimeout(approval.timer);
   approval = undefined;
   sendApproval(state);
-  if (bridge) void chrome.action.setBadgeText({ text: 'ON' }).catch(() => {});
+  if (bridge) void chrome.action.setBadgeText({ text: '' }).catch(() => {});
 }
 
 async function currentDocument({ id, origin, url, documentId }) {
@@ -148,9 +154,12 @@ async function renameGroup(id, from, to, ownedTabs) {
 function detach(s) {
   if (!s || session !== s) return detaching;
   session = undefined;
+  invalidateOwnedDocument(s);
   clearApproval();
   detaching = (async () => {
-    if (s.documentId) await page(s, 'clear').catch(() => {});
+    // A modal can block the cleanup injection. Still release the debugger and
+    // group through this single teardown path.
+    if (s.documentId && !s.modalOpen) await page(s, 'clear').catch(() => {});
     await chrome.debugger.detach({ tabId: s.id }).catch(() => {});
     if (await s.groupMarked) await renameGroup(s.groupId, activeGroupTitle, idleGroupTitle, s.ownedTabs).catch(() => {});
   })();
@@ -160,18 +169,20 @@ function detach(s) {
 async function stopBridge(connection, error) {
   if (bridge !== connection) return;
   bridge = undefined;
+  bridgeError = error;
   clearApproval();
   connection.port.disconnect();
   connection.reject(new Error(error || 'Bridge stopped'));
+  void setBridgeIcon(chrome.action, false);
   await detach(session);
-  if (!bridge) await chrome.action.setBadgeText({ text: error ? 'ERR' : '' });
+  if (!bridge) await chrome.action.setBadgeText({ text: error ? 'ERR' : '' }).catch(() => {});
 }
 
-function startBridge() {
-  if (bridge) return bridge.ready;
-  const port = chrome.runtime.connectNative('local.pi_chrome');
+function startBridge(socketOverride) {
+  const socketName = socketOverride ?? defaultSocketName;
+  const port = chrome.runtime.connectNative('local.vabu');
   const { promise: ready, resolve, reject } = Promise.withResolvers();
-  const connection = bridge = { port, ready, reject, busy: false, sessionState: createSessionState(), workspaces: new Map(), groups: new Map(), ownedTabs: new Set() };
+  const connection = bridge = { port, socketName, socketOverride, ready, reject, online: false, busy: false, sessionState: createSessionState(), workspaces: new Map(), groups: new Map(), ownedTabs: new Set() };
   port.onDisconnect.addListener(() => {
     void stopBridge(connection, chrome.runtime.lastError?.message || 'Native host disconnected');
   });
@@ -181,21 +192,29 @@ function startBridge() {
       await stopBridge(connection, msg.startupError);
       return;
     }
-    if (msg?.ready === true) {
+    if (msg?.ready === true && !connection.online) {
+      if (msg.socketName !== socketName) return stopBridge(connection, 'Unexpected native host readiness. Update the VABU native host and reconnect.');
       connection.online = true;
       resolve();
-      await chrome.action.setBadgeText({ text: approval?.documentId ? 'ASK' : 'ON' });
+      void setBridgeIcon(chrome.action, true);
+      await chrome.action.setBadgeText({ text: approval?.documentId ? 'ASK' : '' }).catch(() => {});
       return;
     }
-    if (typeof msg?.id !== 'string') return;
+    if (!connection.online || typeof msg?.id !== 'string') return;
     if (connection.busy) {
       port.postMessage({ id: msg.id, error: 'Another command is running' });
       return;
     }
     connection.busy = true;
     let response;
+    let beforeReply;
     try {
-      response = { value: await command(connection, msg.args) };
+      const value = await command(connection, msg.args, (verify, assertCurrent) => { beforeReply = { verify, assertCurrent }; });
+      if (beforeReply) {
+        await beforeReply.verify();
+        beforeReply.assertCurrent();
+      }
+      response = { value };
     } catch (error) {
       response = { error: error.message };
     } finally {
@@ -203,22 +222,42 @@ function startBridge() {
     }
     if (bridge === connection) port.postMessage({ id: msg.id, ...response });
   });
+  try { port.postMessage({ type: 'configure', socketName }); }
+  catch (error) { void stopBridge(connection, error.message); }
   return ready;
 }
 
-async function changeBridge(action) {
-  if (!bridgeStorage) {
-    if (action === 'start') return startBridge();
-    if (action === 'stop' && bridge) return stopBridge(bridge);
-    return;
-  }
+const defaultSocketName = defaultSocketNames.chrome;
+const invalidSavedSocketName = 'Saved socket name is invalid; choose a new name or clear it.';
 
-  const intent = action === 'auto' ? bridgeIntent : ++bridgeIntent;
+async function storedSocketName() {
+  return (await chrome.storage.local.get('bridgeSocketName')).bridgeSocketName ?? null;
+}
+
+async function changeBridge(action, socketOverride) {
+  const intent = ['start', 'stop'].includes(action) ? ++bridgeIntent : bridgeIntent;
   // Serialize policy writes, not the native handshake: Stop must be able to cancel it.
   const transition = bridgeTransition.then(async () => {
+    if (action === 'status') {
+      const saved = bridge ? bridge.socketOverride : await storedSocketName();
+      const socketOverride = validSocketName(saved) ? saved : null;
+      return { browser: 'chrome', connected: bridge?.online === true, starting: !!bridge && !bridge.online,
+        socketName: bridge?.socketName ?? socketOverride ?? defaultSocketName, socketOverride,
+        bridgeError: bridgeError ?? (saved === socketOverride ? undefined : invalidSavedSocketName) };
+    }
+    if (action === 'set-socket') {
+      if (bridge) throw new Error('Stop the local bridge before changing its socket name');
+      if (socketOverride !== null && !validSocketName(socketOverride)) throw new Error(socketNameError);
+      await chrome.storage.local.set({ bridgeSocketName: socketOverride });
+      if (bridgeError) await chrome.action.setBadgeText({ text: '' }).catch(() => {});
+      bridgeError = undefined;
+      return;
+    }
     if (action === 'stop') {
       try {
         if (bridge) await stopBridge(bridge);
+        else if (bridgeError) await chrome.action.setBadgeText({ text: '' }).catch(() => {});
+        bridgeError = undefined;
       } finally {
         await bridgeStorage.set({ bridgeMode: 'stopped' });
       }
@@ -228,12 +267,29 @@ async function changeBridge(action) {
     if (intent !== bridgeIntent) throw new Error('Bridge request superseded');
     await bridgeStorage.set({ bridgeMode: 'attempted' });
     if (intent !== bridgeIntent) throw new Error('Bridge request superseded');
-    const ready = startBridge();
-    if (action === 'auto') void ready.catch(() => {});
-    else return { ready };
+    if (bridge) return { ready: bridge.ready };
+    let saved;
+    try {
+      saved = await storedSocketName();
+      if (saved !== null && !validSocketName(saved)) throw new Error(invalidSavedSocketName);
+    } catch (error) {
+      bridgeError = error.message;
+      throw error;
+    }
+    if (intent !== bridgeIntent) throw new Error('Bridge request superseded');
+    bridgeError = undefined;
+    try {
+      const ready = startBridge(saved);
+      if (action === 'auto') void ready.catch(() => {});
+      else return { ready };
+    } catch (error) {
+      bridgeError = error.message;
+      throw error;
+    }
   });
   bridgeTransition = transition.catch(() => {});
-  return (await transition)?.ready;
+  const result = await transition;
+  return result?.ready ?? result;
 }
 
 function tryAutoStart() {
@@ -243,23 +299,21 @@ function tryAutoStart() {
 chrome.runtime.onStartup?.addListener(tryAutoStart);
 chrome.runtime.onInstalled?.addListener(tryAutoStart);
 chrome.runtime.onMessage.addListener((message, sender, reply) => {
-  if ((message.action === 'feedback-start' && sender.url === popupUrl) || message.action === 'feedback-submit') {
-    handleFeedback(chrome, () => bridge?.online ? bridge : undefined, message, sender).then(reply, (error) => reply({ error: error.message }));
+  if (['feedback-start', 'feedback-submit'].includes(message?.action)) {
+    const connection = bridge;
+    handleFeedback(chrome, connection, async () => {
+      const s = requireOwnedSelection(connection);
+      const scope = ownedDocumentScope(connection, s);
+      scope.parent.url = (await chrome.tabs.get(s.id)).url;
+      return { ...scope, id: s.id, documentId: scope.parent.documentId, href: scope.parent.url, owner: s.workspace ?? connection };
+    }, message, sender).then(reply, error => reply({ error: error.message }));
     return true;
   }
-  if (sender.url !== popupUrl) return false;
-  if (message.action === 'status') {
-    if (!bridgeStorage) {
-      reply({ connected: Boolean(bridge) });
-      return false;
-    }
-    void tryAutoStart().then(() => reply({ connected: Boolean(bridge) }));
-  } else if (message.action === 'start' || message.action === 'stop') {
-    changeBridge(message.action).then(() => reply({ ok: true }), (error) => reply({ error: error.message }));
-  } else {
-    reply({ ok: true });
-    return false;
-  }
+  if (sender.url !== popupUrl || !['status', 'start', 'stop', 'set-socket'].includes(message?.action)) return false;
+  const response = message.action === 'status'
+    ? tryAutoStart().then(() => changeBridge('status'))
+    : changeBridge(message.action, message.socketOverride);
+  response.then((result) => reply(result ?? { ok: true }), (error) => reply({ error: error.message }));
   return true;
 });
 
@@ -275,9 +329,22 @@ chrome.debugger.onDetach.addListener(({ tabId }) => {
   if (session?.id === tabId) void detach(session);
 });
 
-chrome.debugger.onEvent.addListener(({ tabId }, method, params) => {
+chrome.debugger.onEvent.addListener(({ tabId, sessionId }, method, params) => {
   const s = session;
-  if (!s || s.id !== tabId || method !== 'Page.frameNavigated' || params.frame.parentId) return;
+  if (!s || s.id !== tabId || sessionId !== undefined) return;
+  const dialog = s.dialogScope?.dialog;
+  if (method === 'Page.javascriptDialogOpening') {
+    s.modalOpen = true;
+    if (params.url === s.dialogScope?.parent.url) dialog?.opening(params);
+    else dialog?.invalidate();
+    return;
+  }
+  if (method === 'Page.javascriptDialogClosed') {
+    s.modalOpen = false;
+    return dialog?.closed(params);
+  }
+  if (method !== 'Page.frameNavigated' || params.frame.parentId) return;
+  invalidateOwnedDocument(s);
   try {
     if (!s.userDocument && webUrl(params.frame.url).origin === s.origin) return;
   } catch {}
@@ -294,20 +361,39 @@ function forgetTab(tabId) {
 chrome.tabs.onRemoved.addListener(forgetTab);
 chrome.tabs.onReplaced?.addListener((_added, removed) => forgetTab(removed));
 
+function invalidateFrameScope(tabId) {
+  if (session?.id === tabId) session.frameScope = session.frameInspectionScope = undefined;
+}
+
+function invalidateOwnedDocument(s) {
+  if (bridge?.feedbackLease?.scope.id === s.id) delete bridge.feedbackLease;
+  s.lastCapture = undefined;
+  s.ownedDocumentVersion = (s.ownedDocumentVersion ?? 0) + 1;
+  s.dialogScope?.dialog.dispose();
+  s.dialogScope = undefined;
+}
+
 function invalidateDocument({ tabId, frameId = 0 }) {
+  invalidateFrameScope(tabId);
   if (frameId !== 0) return;
   if (approval?.id === tabId) clearApproval();
-  if (session?.id === tabId && session.userDocument) void detach(session);
+  if (session?.id !== tabId) return;
+  if (session.userDocument) void detach(session);
+  else invalidateOwnedDocument(session);
 }
 
 navigation?.onBeforeNavigate?.addListener(invalidateDocument);
 navigation?.onCommitted?.addListener(invalidateDocument);
 navigation?.onHistoryStateUpdated?.addListener(invalidateDocument);
 navigation?.onReferenceFragmentUpdated?.addListener(invalidateDocument);
+navigation?.onErrorOccurred?.addListener(({ tabId, frameId }) => {
+  invalidateFrameScope(tabId);
+  if (frameId === 0 && session?.id === tabId) invalidateOwnedDocument(session);
+});
 chrome.tabs.onUpdated.addListener((tabId, { status, url, discarded }) => {
   if (status === 'loading' || url !== undefined || discarded) invalidateDocument({ tabId });
   const s = session;
-  if (status === 'complete' && s?.ready && !s.userDocument && s.id === tabId) void page(s, 'show').catch(() => {});
+  if (status === 'complete' && s?.ready && !s.userDocument && s.id === tabId && !s.modalOpen) void page(s, 'show').catch(() => {});
 });
 
 async function cdp(s, method, params) {
@@ -322,7 +408,7 @@ async function page(s, operation, ...args) {
   else if (session !== s) throw new Error('Tab is no longer authorized');
   else {
     if (operation === 'confirmClick') target.documentIds = [args.shift()];
-    if (operation === 'findClick') target.documentIds = [args.pop()];
+    if (operation === 'findClick' || operation === 'click') target.documentIds = [args.pop()];
     if (s.userDocument) {
       await checkedTab(s);
       target.documentIds = [s.userDocument.documentId];
@@ -330,7 +416,7 @@ async function page(s, operation, ...args) {
     if (session !== s) throw new Error('Tab is no longer authorized');
   }
   const [injection] = await chrome.scripting.executeScript({
-    target, func: inPage, args: [s.origin, s.overlayKey, !s.inManagedGroup, operation, ...args],
+    target, world: 'ISOLATED', func: inPage, args: [s.origin, s.overlayKey, !s.inManagedGroup, operation, ...args],
   });
   if (operation !== 'clear') {
     if (session !== s) {
@@ -339,6 +425,7 @@ async function page(s, operation, ...args) {
       }
       throw new Error('Tab is no longer authorized');
     }
+    if (target.documentIds && injection?.documentId !== target.documentIds[0]) throw new Error('Selected document changed');
     if (injection?.documentId) s.documentId = injection.documentId;
   }
   if (!injection?.result?.ok) throw new Error(injection?.result?.error || 'Page is not available');
@@ -366,15 +453,15 @@ function inPage(origin, key, markTitle, operation, arg, y, animate = true, findT
   const ok = (value) => ({ ok: true, value });
   if (window !== window.top || location.origin !== origin) return fail('Page changed origin or frame; authorize it again');
   if (operation === 'clear') {
-    if (globalThis.piChrome?.key === key) globalThis.piChrome.clear();
+    if (globalThis.vabuCursorState?.key === key) globalThis.vabuCursorState.clear();
     return ok(true);
   }
 
   const style = (element, properties) => {
     for (const [name, value] of Object.entries(properties)) element.style.setProperty(name, value, 'important');
   };
-  if (globalThis.piChrome?.key !== key || !globalThis.piChrome.host.isConnected) {
-    globalThis.piChrome?.clear();
+  if (globalThis.vabuCursorState?.key !== key || !globalThis.vabuCursorState.host.isConnected) {
+    globalThis.vabuCursorState?.clear();
     const host = document.createElement('div');
     style(host, {
       all: 'initial', display: 'block', position: 'fixed', inset: '0',
@@ -412,7 +499,7 @@ function inPage(origin, key, markTitle, operation, arg, y, animate = true, findT
     const markTab = () => {
       if (document.title === markedTitle) return;
       originalTitle = document.title;
-      document.title = originalTitle ? '🟣 VACU actief · ' + originalTitle : '🟣 VACU actief';
+      document.title = originalTitle ? '🟣 VABU actief · ' + originalTitle : '🟣 VABU actief';
       markedTitle = document.title;
     };
     const observer = new MutationObserver(markTab);
@@ -425,12 +512,12 @@ function inPage(origin, key, markTitle, operation, arg, y, animate = true, findT
       observer.disconnect();
       if (document.title === markedTitle) document.title = originalTitle;
       host.remove();
-      delete globalThis.piChrome;
+      delete globalThis.vabuCursorState;
     };
     addEventListener('pagehide', clear, { once: true });
-    globalThis.piChrome = { key, host, cursor, title, clear };
+    globalThis.vabuCursorState = { key, host, cursor, title, clear };
   }
-  const state = globalThis.piChrome;
+  const state = globalThis.vabuCursorState;
   if (operation === 'show') return ok(true);
   if (operation === 'title') return ok(state.title());
   if (operation === 'waitCursor') {
@@ -453,7 +540,9 @@ function inPage(origin, key, markTitle, operation, arg, y, animate = true, findT
     if (find?.ticket !== (arg ?? undefined) || (find && state.find !== find)) return fail('Find target expired');
     delete state.preview;
     if (find) delete state.find;
-    if ((!y && document.hidden) || !preview || document.elementFromPoint(preview.x, preview.y) !== preview.hit
+    const background = y === true;
+    if (document.hidden !== background || (background && (location.href !== animate || globalThis.origin !== origin))
+      || !preview || document.elementFromPoint(preview.x, preview.y) !== preview.hit
       || preview.hit.closest('a[href]')?.href !== preview.href || preview.hit.closest(':disabled')
       || (preview.binding && ((!find && state.targets !== preview.targets)
         || !preview.binding.valid(preview.proxy ? preview.hit : undefined)))) {
@@ -461,26 +550,23 @@ function inPage(origin, key, markTitle, operation, arg, y, animate = true, findT
     }
     const verified = find?.verify();
     if (verified && !verified.ok) return verified;
-    if (y) {
+    if (background) {
       const { hit, x, y: clientY } = preview;
-      const control = hit.closest('label')?.control ?? hit.closest('input,button');
-      if (hit.closest('iframe,frame,embed,object,fencedframe,portal,[inert],input[type=file],input[type=password]')
-        || control?.matches(':disabled,input[type=file],input[type=password]')) {
+      const blocked = 'iframe,frame,embed,object,fencedframe,portal,[inert],[aria-disabled="true" i],:disabled,input[type=file],input[type=password]';
+      const labelControl = hit.closest('label')?.control;
+      const control = labelControl ?? hit.closest('input,button,textarea');
+      if (hit.closest(blocked) || (labelControl && !labelControl.contains(hit)) || control?.closest(blocked)
+        || (control?.form && ['submit', 'reset', 'image'].includes(control.type))) {
         return fail('This control cannot be clicked in the background');
       }
       const anchor = hit.closest('a,area');
-      if (anchor && anchor.namespaceURI !== 'http://www.w3.org/1999/xhtml') {
-        return fail('SVG links require a foreground click; select the tab manually');
-      }
-      const link = anchor?.hasAttribute('href') ? anchor : null;
-      const form = ['submit', 'image'].includes(control?.type) ? control.form : null;
-      const baseTarget = document.querySelector('base[target]')?.getAttribute('target');
-      const sameTab = (target) => ['', '_self'].includes((target || baseTarget || '').toLowerCase());
-      const destination = link?.href ?? (form && (control.getAttribute('formaction') === null ? form.action : control.formAction));
-      if ((link && (link.hasAttribute('download') || !sameTab(link.getAttribute('target'))))
-        || (form && !sameTab(control.getAttribute('formtarget') ?? form.getAttribute('target')))
-        || ((link || form) && !/^https?:/i.test(destination))) {
-        return fail('This link or form requires a foreground click; select the tab manually');
+      if (anchor) {
+        const target = anchor.getAttribute('target') || document.querySelector('base[target]')?.getAttribute('target') || '';
+        const href = anchor.getAttribute('href');
+        const url = href === null ? null : new URL(href, document.baseURI);
+        if (anchor.namespaceURI !== 'http://www.w3.org/1999/xhtml' || anchor.hasAttribute('download') || anchor.hasAttribute('ping')
+          || !['', '_self'].includes(target.toLowerCase()) || (url && (!/^https?:$/.test(url.protocol)
+            || url.origin !== origin || url.username || url.password))) return fail('This link cannot be clicked in the background');
       }
       hit.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, composed: true,
         clientX: x, clientY, view: window, detail: 1 }));
@@ -601,19 +687,23 @@ async function checkedTab(s) {
   return info;
 }
 
-async function click(s, target, y, wasActive, expectedDocument, findTicket) {
-  if (!wasActive) expectedDocument ??= s.documentId;
-  if (!wasActive && !expectedDocument) throw new Error('Selected document is not ready');
-  if (expectedDocument && s.documentId !== expectedDocument) throw new Error('Click cancelled: selected document changed');
-  const point = findTicket
-    ? await page(s, 'findClick', target, y, Boolean(wasActive), findTicket, expectedDocument)
-    : await page(s, 'click', target, y, Boolean(wasActive), ...(expectedDocument ? [expectedDocument] : []));
-  const documentId = s.documentId;
-  if (expectedDocument && documentId !== expectedDocument) throw new Error('Click cancelled: selected document changed');
+async function click(connection, s, target, y, wasActive, documentId = s.documentId, findTicket) {
+  if (!documentId || s.documentId !== documentId) throw new Error('Click cancelled: selected document changed');
+  let scope;
   if (!wasActive) {
-    await checkedTab(s);
-    if (s.documentId !== documentId) throw new Error('Click cancelled: selected document changed');
-    await page(s, 'confirmClick', documentId, findTicket ?? null, true);
+    requireOwnedSelection(connection, s);
+    scope = ownedDocumentScope(connection, s);
+    scope.parent.url = (await chrome.tabs.get(s.id)).url;
+    if ((await scope.verify()).active !== false) throw new Error('Click cancelled: tab activation changed');
+  }
+  const point = findTicket
+    ? await page(s, 'findClick', target, y, wasActive, findTicket, documentId)
+    : await page(s, 'click', target, y, wasActive, documentId);
+  if (s.documentId !== documentId) throw new Error('Click cancelled: selected document changed');
+  if (scope) {
+    if ((await scope.verify()).active !== false) throw new Error('Click cancelled: tab activation changed');
+    scope.assertCurrent();
+    await page(s, 'confirmClick', documentId, findTicket ?? null, true, scope.parent.url);
     return { ...point, dispatched: true, trusted: false };
   }
   await cdp(s, 'Input.dispatchMouseEvent', { ...point, type: 'mouseMoved' });
@@ -621,99 +711,14 @@ async function click(s, target, y, wasActive, expectedDocument, findTicket) {
     throw new Error('Click cancelled: selected tab is not visible');
   }
   if (s.documentId !== documentId) throw new Error('Click cancelled: selected document changed');
+  const epoch = s.ownedDocumentVersion;
   await page(s, 'confirmClick', documentId, ...(findTicket ? [findTicket] : []));
+  if (!(await checkedTab(s)).active || s.documentId !== documentId || s.ownedDocumentVersion !== epoch) {
+    throw new Error('Click cancelled: selected tab or document changed');
+  }
   await cdp(s, 'Input.dispatchMouseEvent', { ...point, type: 'mousePressed', button: 'left', buttons: 1, clickCount: 1 });
   await cdp(s, 'Input.dispatchMouseEvent', { ...point, type: 'mouseReleased', button: 'left', clickCount: 1 });
   return { ...point, dispatched: true };
-}
-
-// Last image per tab and capture mode, kept only in memory, for --if-changed.
-const lastCaptures = new Map();
-chrome.tabs.onRemoved.addListener((tabId) => lastCaptures.delete(tabId));
-
-async function decodeImage(data) {
-  const bytes = Uint8Array.from(atob(data), (char) => char.charCodeAt(0));
-  const bitmap = await createImageBitmap(new Blob([bytes]));
-  const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
-  const context = canvas.getContext('2d', { willReadFrequently: true });
-  context.drawImage(bitmap, 0, 0);
-  bitmap.close();
-  return context.getImageData(0, 0, canvas.width, canvas.height);
-}
-
-async function guardedFrames(s) {
-  if (!navigation?.getAllFrames) throw new Error('Screenshots require Chrome webNavigation');
-  return frameFingerprint(await navigation.getAllFrames({ tabId: s.id }),
-    (url) => hasHostAccess(chrome.permissions, url));
-}
-
-async function screenshotPage(s, documentId, operation, payload) {
-  if (session !== s || s.documentId !== documentId) throw new Error('Selected document changed; screenshot cancelled');
-  const [injection] = await chrome.scripting.executeScript({
-    target: { tabId: s.id, documentIds: [documentId] }, world: 'ISOLATED',
-    func: screenshotInPage, args: [s.origin, s.overlayKey, operation, payload ?? null],
-  });
-  if (injection?.documentId !== documentId) throw new Error('Selected document changed; screenshot cancelled');
-  if (!injection.result?.ok) throw new Error(injection.result?.error || 'Page is not available');
-  return injection.result.value;
-}
-
-async function screenshot(s, args) {
-  if (args.length !== 1) throw new Error('Usage: vacu screenshot [SELECTOR] [PATH] [--full] [--annotate] ...');
-  const request = screenshotRequest(args[0]);
-  let annotations;
-  if (request.annotate) {
-    const { controls } = await page(s, 'snapshot');
-    annotations = controls.map(({ ref, role, name }, i) => ({ label: i + 1, ref, role, name }));
-  } else {
-    await page(s, 'show');
-  }
-  const documentId = s.documentId;
-  if (!documentId) throw new Error('Selected document is not ready');
-  const prepared = await screenshotPage(s, documentId, 'prepare', { target: request.target, annotate: request.annotate });
-  let data;
-  let clipped = false;
-  try {
-    const before = await guardedFrames(s);
-    let clip = prepared.clip;
-    if (request.full) {
-      const { cssContentSize, contentSize } = await cdp(s, 'Page.getLayoutMetrics');
-      const { width, height } = cssContentSize ?? contentSize;
-      clip = { x: 0, y: 0, width, height };
-    }
-    const params = { format: request.format };
-    if (request.quality !== null) params.quality = request.quality;
-    if (clip) {
-      ({ clip, clipped } = clampClip(clip));
-      Object.assign(params, { clip: { ...clip, scale: 1 }, captureBeyondViewport: true });
-    }
-    // Chrome can occasionally never answer; don't keep the bridge busy forever.
-    let timer;
-    ({ data } = await Promise.race([
-      cdp(s, 'Page.captureScreenshot', params),
-      new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('Chrome did not return a screenshot; try again')), 12_000); }),
-    ]).finally(() => clearTimeout(timer)));
-    // Discard the image if any frame document appeared, navigated or lost access while capturing.
-    if (await guardedFrames(s) !== before) throw new Error('Frames changed during capture; screenshot discarded, try again');
-    await checkedTab(s);
-    if (session !== s || s.documentId !== documentId) throw new Error('Selected document changed; screenshot discarded');
-  } finally {
-    await screenshotPage(s, documentId, 'restore').catch(() => {});
-  }
-  if (typeof data !== 'string' || !data || data.length > maxImageBase64) {
-    throw new Error('Screenshot is too large; capture a selector or use --screenshot-format jpeg');
-  }
-  const result = { format: request.format, ...(clipped ? { clipped } : {}), ...(annotations ? { annotations } : {}) };
-  if (request.ifChanged) {
-    const key = JSON.stringify([s.origin, request.target, request.full, request.annotate, request.format, request.quality]);
-    const previous = lastCaptures.get(s.id);
-    const ratio = previous?.key !== key ? 1 : previous.data === data ? 0
-      : changedRatio(await decodeImage(previous.data), await decodeImage(data));
-    result.changedRatio = ratio;
-    if (previous?.key === key && ratio <= request.threshold) return { ...result, unchanged: true };
-    lastCaptures.set(s.id, { key, data });
-  }
-  return { ...result, data };
 }
 
 async function runAdapter(connection, verb, args) {
@@ -741,7 +746,7 @@ async function runAdapter(connection, verb, args) {
   const inject = async (func, ...params) => {
     await assertCurrent();
     const [result] = await chrome.scripting.executeScript({
-      target: { tabId: s.id, documentIds: [documentId] }, func, args: [s.origin, ...params],
+      target: { tabId: s.id, documentIds: [documentId] }, world: 'ISOLATED', func, args: [s.origin, ...params],
     });
     await assertCurrent();
     if (result?.documentId !== documentId) throw new Error('Selected document changed');
@@ -750,57 +755,6 @@ async function runAdapter(connection, verb, args) {
   const unwrap = (result) => {
     if (result?.ok !== true) throw new Error(result?.error || 'Page operation failed');
     return result.value;
-  };
-  const frameIndex = async () => {
-    await assertCurrent();
-    if (!navigation?.getAllFrames) throw new Error('Frame inspection requires Chrome webNavigation');
-    const entries = await navigation.getAllFrames({ tabId: s.id });
-    await assertCurrent();
-    return new Map((entries ?? []).map(frame => [frame.frameId, frame]));
-  };
-  const frameChain = (index, frameId) => {
-    const chain = [];
-    try {
-      for (let entry = index.get(frameId); entry && chain.length < 20; entry = index.get(entry.parentFrameId)) {
-        if (!entry.documentId || entry.errorOccurred || entry.documentLifecycle !== 'active') return;
-        const { origin, href } = webUrl(entry.url);
-        chain.push({ frameId: entry.frameId, documentId: entry.documentId, origin, href });
-        if (entry.frameId === 0) {
-          if (entry.frameType === 'outermost_frame' && entry.documentId === documentId && origin === s.origin) return chain;
-          return;
-        }
-        if (entry.frameType !== 'sub_frame' || index.get(entry.parentFrameId)?.documentId !== entry.parentDocumentId) return;
-      }
-    } catch {}
-  };
-  const injectFrame = async (chain, operation, payload) => {
-    const [entry, ...ancestors] = chain;
-    if (!await hasHostAccess(chrome.permissions, webUrl(entry.href))) throw new Error('Frame host access is not granted');
-    let results;
-    try {
-      results = await chrome.scripting.executeScript({
-        target: { tabId: s.id, documentIds: [entry.documentId] }, world: 'ISOLATED', func: inspectionPage,
-        args: [entry.origin, s.overlayKey, operation, payload ?? null, ancestors.map(node => node.origin), entry.href],
-      });
-    } catch {
-      throw new Error('Chrome could not access the authorized frame document');
-    }
-    const [result] = results;
-    if (results.length !== 1 || result.documentId !== entry.documentId || result.frameId !== entry.frameId) {
-      throw new Error('Frame changed; run frames again');
-    }
-    return unwrap(result.result);
-  };
-  const verifyChain = async (chain, probes = new Map()) => {
-    for (let i = chain.length - 1; i >= 0; i--) {
-      const { documentId: id } = chain[i];
-      if (!probes.has(id)) probes.set(id, injectFrame(chain.slice(i), 'scope'));
-      if (await probes.get(id) !== true) throw new Error('Frame ancestry could not be verified');
-    }
-  };
-  const assertChain = async (chain) => {
-    const current = frameChain(await frameIndex(), chain[0].frameId);
-    if (!current || JSON.stringify(current) !== JSON.stringify(chain)) throw new Error('Frame changed; run frames again');
   };
   const ctx = {
     tabId: s?.id, origin: s?.origin, assertBridge, assertCurrent,
@@ -813,25 +767,8 @@ async function runAdapter(connection, verb, args) {
       if (integrationOperations.has(operation)) return inject(inPageIntegration, operation);
       throw new Error('Unsupported adapter operation');
     },
-    inspectionScope: async (frameId, expectedDocument) => {
-      if (frameId !== 0) {
-        const chain = frameChain(await frameIndex(), frameId);
-        if (!chain || chain[0].documentId !== expectedDocument) throw new Error('Frame is stale or unavailable; run frames again');
-        return { documentId: chain[0].documentId, assertCurrent: () => assertChain(chain),
-          run: async (operation, payload) => {
-            // CDP hit testing cannot pin synthetic dispatch to the verified ref and layout.
-            if (operation === 'click' && chain.some(node => node.origin !== s.origin)) {
-              throw new Error('Cross-origin frame clicks require safe ancestor hit testing, which Chrome cannot verify');
-            }
-            await verifyChain(chain);
-            await assertChain(chain);
-            const result = await injectFrame(chain, operation, payload);
-            await verifyChain(chain);
-            await assertChain(chain);
-            return result;
-          },
-        };
-      }
+    inspectionScope: async (frameId) => {
+      if (frameId !== 0) throw new Error('Subframe inspection is not enabled');
       await assertCurrent();
       return { documentId, assertCurrent,
         run: async (operation, value) => unwrap(await inject(inspectionPage, s.overlayKey, operation, value)),
@@ -844,7 +781,7 @@ async function runAdapter(connection, verb, args) {
       await assertCurrent();
       const { active } = await checkedTab(s);
       await assertCurrent();
-      return click(s, ref, null, active, documentId, findTicket);
+      return click(connection, s, ref, null, active, documentId, findTicket);
     },
     observeWait: async (kind, value) => {
       if (kind === 'text') return inject(waitTextInPage, value);
@@ -858,26 +795,6 @@ async function runAdapter(connection, verb, args) {
       return !tab.pendingUrl && webUrl(tab.url).href === value;
     },
   };
-  if (verb === 'frames') {
-    if (args.length) throw new Error('Usage: frames');
-    const index = await frameIndex();
-    const probes = new Map();
-    const frames = [];
-    for (const frameId of index.keys()) {
-      if (frameId === 0) continue;
-      const chain = frameChain(index, frameId);
-      if (!chain) continue;
-      try {
-        await verifyChain(chain, probes);
-        frames.push(chain);
-      } catch {}
-    }
-    const current = await frameIndex();
-    return frames.flatMap(chain => {
-      const { frameId, documentId } = chain[0];
-      return JSON.stringify(frameChain(current, frameId)) === JSON.stringify(chain) ? [{ frameId, documentId }] : [];
-    });
-  }
   if (verb === 'title') {
     if (args.length) throw new Error('Invalid command arguments');
     return unwrap(await inject(inPage, s?.overlayKey, !s?.inManagedGroup, 'title'));
@@ -890,18 +807,176 @@ async function runAdapter(connection, verb, args) {
   return adapterCommands[verb](args, ctx);
 }
 
-async function command(connection, args) {
+function isOwnedSelection(connection, s) {
+  return bridge === connection && session === s && s?.ready && s.documentId && !s.userDocument
+    && connection.ownedTabs.has(s.id) && (!s.workspace || s.workspace.tabs.has(s.id));
+}
+
+function requireOwnedSelection(connection, s = session) {
+  if (!isOwnedSelection(connection, s)) throw new Error('Select a tab opened by VABU in this bridge and workspace first');
+  return s;
+}
+
+function ownedDocumentScope(connection, s) {
+  if (!canCheckDocument || !navigation.onHistoryStateUpdated || !navigation.onReferenceFragmentUpdated
+    || !navigation.onErrorOccurred) throw new Error('Chrome document verification APIs are required');
+  const parent = { id: s.id, origin: s.origin, documentId: s.documentId };
+  const version = s.ownedDocumentVersion;
+  const assertCurrent = () => {
+    if (!isOwnedSelection(connection, s) || s.ownedDocumentVersion !== version || s.documentId !== parent.documentId) {
+      throw new Error('Owned document selection expired; use the tab again');
+    }
+  };
+  const verify = async () => {
+    assertCurrent();
+    const { info } = await currentDocument(parent);
+    assertCurrent();
+    return info;
+  };
+  return { parent, assertCurrent, verify };
+}
+
+async function runCapture(connection, args, setBeforeReply) {
+  const options = captureOptions(args);
+  const s = requireOwnedSelection(connection);
+  // The worker's existing event listeners invalidate this version even during
+  // the initial lookup, capture, or final authorization before the native reply.
+  const scope = ownedDocumentScope(connection, s);
+  const data = await captureOwnedViewport({
+    tabId: s.id, ...options,
+    createGuard: async () => {
+      scope.parent.url = (await chrome.tabs.get(s.id)).url;
+      return { assertValid: scope.verify, close() {} }; // No per-request listeners to remove.
+    },
+    sendCommand: (target, method, params) => {
+      scope.assertCurrent();
+      return chrome.debugger.sendCommand(target, method, params);
+    },
+  });
+  const { value, next } = await captureResponse(data, options, s.lastCapture, scope.parent.documentId);
+  setBeforeReply(scope.verify, () => {
+    scope.assertCurrent();
+    if (next) s.lastCapture = next;
+  });
+  return value;
+}
+
+async function armDialogScope(connection, s) {
+  if (!isOwnedSelection(connection, s) || s.dialogScope || s.modalOpen) return;
+  try {
+    const scope = ownedDocumentScope(connection, s);
+    scope.parent.url = (await chrome.tabs.get(s.id)).url;
+    await scope.verify();
+    scope.assertCurrent();
+    if (s.modalOpen) return;
+    const dialog = createOwnedDialog({ tabId: s.id, sendCommand: (target, method, params) => {
+      scope.assertCurrent();
+      return chrome.debugger.sendCommand(target, method, params);
+    } });
+    s.dialogScope = { ...scope, dialog };
+  } catch {} // Normal selection remains available without a verified dialog observer.
+}
+
+async function runDialog(connection, args, setBeforeReply) {
+  const [action, id] = args;
+  if (!(action === 'show' && args.length === 1)
+    && !(['accept', 'dismiss'].includes(action) && args.length === 2 && /^[a-zA-Z\d_-]{16,80}$/.test(id))) {
+    throw new Error('Usage: inspect-dialog show | accept ID | dismiss ID');
+  }
+  const s = requireOwnedSelection(connection);
+  const scope = s.dialogScope;
+  if (!scope) throw new Error('No verified dialog observer; use the tab before opening a dialog');
+  try {
+    await scope.verify(); // Browser metadata only: scripts may be blocked by the dialog.
+  } catch (error) {
+    if (s.dialogScope === scope) invalidateOwnedDocument(s);
+    throw error;
+  }
+  scope.assertCurrent();
+  if (action === 'show') {
+    const value = scope.dialog.getCurrent();
+    if (!value) throw new Error('No current supported dialog');
+    setBeforeReply(scope.verify, () => {
+      scope.assertCurrent();
+      if (scope.dialog.getCurrent()?.id !== value.id) throw new Error('Dialog changed; use show again');
+    });
+    return value;
+  }
+  await scope.dialog.respond(id, action);
+  const verifyResponse = async () => {
+    try { await scope.verify(); }
+    catch { throw new Error('Dialog response outcome indeterminate; do not retry the ID'); }
+  };
+  setBeforeReply(verifyResponse, () => {
+    try { scope.assertCurrent(); }
+    catch { throw new Error('Dialog response outcome indeterminate; do not retry the ID'); }
+  });
+  return { handled: true };
+}
+
+async function runFrameCommand(connection, verb, args, setBeforeReply) {
+  if (!canReadFrames(chrome)) throw new Error('Direct iframe reads require Chrome document verification APIs');
+  const s = requireOwnedSelection(connection);
+  const documentId = s.documentId;
+  const inspection = isFrameInspection(verb, args);
+  const field = inspection ? 'frameInspectionScope' : 'frameScope';
+  let scope = s[field];
+  const assertCurrent = () => {
+    if (!isOwnedSelection(connection, s) || s.documentId !== documentId || s[field] !== scope) {
+      throw new Error('Iframe selection expired; run frame-list again');
+    }
+  };
+  const finalCheck = (verify) => setBeforeReply(async () => {
+    try {
+      await verify();
+    } catch (error) {
+      if (s.frameScope === scope) s.frameScope = undefined;
+      throw error;
+    }
+  }, assertCurrent);
+  if (verb === 'frames' && args.length) throw new Error('Usage: frames');
+  if ((verb === 'frame-list' || verb === 'frames') && args.length === 0) {
+    // Install a fresh scope before the first asynchronous lookup, so navigation
+    // during discovery invalidates it even before any child IDs are known.
+    const parent = { id: s.id, documentId, origin: s.origin };
+    scope = s[field] = createFrameScope(chrome, parent, assertCurrent);
+    try {
+      parent.url = (await chrome.tabs.get(s.id)).url;
+      if (inspection) return await runListedFrameInspection(verb, args, scope, assertCurrent, setBeforeReply);
+      const value = await scope.discover();
+      finalCheck(scope.verifyParent);
+      return value;
+    } catch {
+      if (s[field] === scope) s[field] = undefined;
+      throw new Error('Cannot verify direct iframes and site access for the selected document');
+    }
+  }
+  if (inspection) return runListedFrameInspection(verb, args, scope, assertCurrent, setBeforeReply);
+  if (verb !== 'frame-read' || args.length !== 1) throw new Error('Usage: frame-list | frame-read FRAME_ID');
+  const frame = scope?.frames.get(args[0]);
+  if (!frame) throw new Error('Unknown or stale iframe ID; run frame-list again');
+  try {
+    const value = await scope.read(frame);
+    finalCheck(() => scope.verifyRead(frame));
+    return value;
+  } catch (error) {
+    if (s.frameScope === scope) s.frameScope = undefined;
+    throw error;
+  }
+}
+
+async function command(connection, args, setBeforeReply) {
   if (!Array.isArray(args) || !args.every((arg) => typeof arg === 'string')) throw new Error('Invalid command');
   if (bridge !== connection) throw new Error('Bridge stopped');
   const [scope, id] = args;
   const workspaces = connection.workspaces;
   const scoped = scope === '--session';
   const workspace = scoped ? workspaces.get(id) : undefined;
-  if (scoped && !workspace) throw new Error('Unknown VACU session ID');
+  if (scoped && !workspace) throw new Error('Unknown VABU session ID');
   if (scoped) args = args.slice(2);
   const [verb, a, b] = args;
   const count = args.length - 1;
-  if (!scoped && verb === 'feedback') return takeFeedback(connection, args.slice(1));
+  if (verb === 'feedback') return takeFeedback(workspace ?? connection, args.slice(1));
   if (!scoped && verb === 'session-start' && count === 1) {
     const name = a.trim();
     if (!name || name.length > 60 || /[\p{Cc}\p{Cf}]/u.test(name)) throw new Error('Supply a session name of 1–60 characters');
@@ -934,8 +1009,13 @@ async function command(connection, args) {
   if (verb === 'open' && count === 1) {
     const url = webUrl(a);
     if (!await hasHostAccess(chrome.permissions, url)) throw new Error('Chrome has not granted access to this site');
+    // A newly opened window cannot have an inactive first tab. Target an existing tab strip.
+    const window = await chrome.windows.getLastFocused({ windowTypes: ['normal'] }).catch(() => null);
     if (bridge !== connection) throw new Error('Bridge stopped');
-    const tab = await chrome.tabs.create({ url: url.href, active: false });
+    if (window?.type !== 'normal' || window.incognito || !Number.isInteger(window.id)) {
+      throw new Error('Open a normal Chromium window before opening a VABU background tab');
+    }
+    const tab = await chrome.tabs.create({ windowId: window.id, url: url.href, active: false });
     if (bridge !== connection) throw new Error('Bridge stopped');
     connection.ownedTabs.add(tab.id);
     workspace?.tabs.add(tab.id);
@@ -943,17 +1023,23 @@ async function command(connection, args) {
       if (workspace) throw new Error(`Tab ${tab.id} opened, but grouping failed: ${error.message}`);
       return null;
     });
-    return { tab: tab.id, origin: url.origin, group };
+    return { tab: tab.id, origin: url.origin, group, active: (await chrome.tabs.get(tab.id)).active };
   }
   if (verb === 'use' && count === 1 && /^\d{1,10}$/.test(a)) {
     const id = Number(a);
     if (workspace ? !workspace.tabs.has(id) : [...workspaces.values()].some(({ tabs }) => tabs.has(id))) {
-      throw new Error('Tab does not belong to this VACU session');
+      throw new Error('Tab does not belong to this VABU session');
     }
     const tab = await chrome.tabs.get(id);
     const info = await tabInfo(tab);
     if (!info) throw new Error('Chrome has not granted access to this tab');
-    if (session?.ready && session.id === id && session.workspace === workspace) return checkedTab(session);
+    if (session?.ready && session.id === id && session.workspace === workspace) {
+      const s = session;
+      const info = await checkedTab(s);
+      if (!s.documentId && !s.userDocument && !s.modalOpen) await page(s, 'show').catch(() => {});
+      await armDialogScope(connection, s);
+      return info;
+    }
     await detach(session);
     if (bridge !== connection) throw new Error('Bridge stopped');
     const { ownedTabs, groups } = connection;
@@ -972,7 +1058,7 @@ async function command(connection, args) {
         showApproval();
       }
       request = approval;
-      if (!request?.allowed) throw new Error(`Approval required: open the VACU toolbar popup, choose Allow, then retry use ${id} within 60 seconds`);
+      if (!request?.allowed) throw new Error(`Approval required: open the VABU toolbar popup, choose Allow, then retry use ${id} within 60 seconds`);
       await checkApproval(request);
     } else {
       clearApproval();
@@ -1000,7 +1086,8 @@ async function command(connection, args) {
       s.ready = true;
       // A loading tab may not have a document yet; onUpdated marks the tab when it does.
       if (userDocument) await page(s, 'show');
-      else await page(s, 'show').catch(() => {});
+      else if (!s.modalOpen) await page(s, 'show').catch(() => {});
+      await armDialogScope(connection, s);
       return await checkedTab(s);
     } catch (error) {
       if (request && approval === request) clearApproval();
@@ -1015,14 +1102,18 @@ async function command(connection, args) {
     return { tab: null };
   }
   if (session && session.workspace !== workspace && (scoped || !browserWideCommands.has(verb))) {
-    throw new Error('Select a tab for this VACU session with use TAB_ID');
+    throw new Error('Select a tab for this VABU session with use TAB_ID');
   }
-  if (verb === 'title' || verb === 'frames' || Object.hasOwn(adapterCommands, verb)) return runAdapter(connection, verb, args.slice(1));
+  if (verb === 'frame-list' || verb === 'frame-read' || isFrameInspection(verb, args.slice(1))) {
+    return runFrameCommand(connection, verb, args.slice(1), setBeforeReply);
+  }
+  if (verb === 'screenshot') return runCapture(connection, args.slice(1), setBeforeReply);
+  if (verb === 'inspect-dialog') return runDialog(connection, args.slice(1), setBeforeReply);
+  if (verb === 'title' || Object.hasOwn(adapterCommands, verb)) return runAdapter(connection, verb, args.slice(1));
   const s = session;
-  if (!s) throw new Error('Select an allowed tab with vacu use TAB_ID');
+  if (!s) throw new Error('Select an allowed tab with vabu use TAB_ID');
   const { active: wasActive } = await checkedTab(s);
   if (verb === 'snapshot' && count === 0) return page(s, verb);
-  if (verb === 'screenshot') return screenshot(s, args.slice(1));
   if (verb === 'type' && count === 1 && a.length > 0 && a.length <= 4000) {
     await page(s, verb);
     await cdp(s, 'Input.insertText', { text: a });
@@ -1040,10 +1131,10 @@ async function command(connection, args) {
     || (verb === 'hover' || verb === 'click') && count === 1 && ref(a)) {
     const target = count === 1 ? a : Number(a);
     const y = count === 1 ? null : Number(b);
-    if (verb === 'click') return click(s, target, y, wasActive);
+    if (verb === 'click') return click(connection, s, target, y, wasActive);
     const point = await page(s, verb, target, y, Boolean(wasActive));
     await cdp(s, 'Input.dispatchMouseEvent', { ...point, type: 'mouseMoved' });
     return point;
   }
-  throw new Error('Invalid command arguments; see vacu help');
+  throw new Error('Invalid command arguments; see vabu help');
 }

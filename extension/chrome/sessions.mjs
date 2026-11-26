@@ -1,4 +1,4 @@
-import { hasHostAccess, webUrl } from './domains.js';
+import { hasHostAccess, webUrl } from '../shared/domains.js';
 
 // One instance per bridge generation. Never reuse this state across reconnects or worker restarts.
 export function createSessionState() {
@@ -81,19 +81,19 @@ async function ownedTab(ctx) {
   const { state } = browser(ctx);
   const { tab, url } = await current(ctx);
   if (!state.tabs.has(tab.id) || tab.groupId !== -1 || tab.pinned) {
-    throw new Error('Requires an ungrouped, unpinned VACU-created tab');
+    throw new Error('Requires an ungrouped, unpinned VABU-created tab');
   }
   return { tab, url };
 }
 
 async function ownedWindow(ctx, windowId) {
   const { api, state } = browser(ctx);
-  if (!state.windows.has(windowId)) throw new Error('Window is not owned by VACU');
+  if (!state.windows.has(windowId)) throw new Error('Window is not owned by VABU');
   const window = await api.windows.get(windowId, { populate: true });
   ctx.assertBridge();
   if (window.type !== 'normal' || window.incognito || !window.tabs?.length || window.tabs.some((tab) =>
     !state.tabs.has(tab.id) || tab.groupId !== -1 || tab.pinned)) {
-    throw new Error('Destination is not a private ungrouped VACU window');
+    throw new Error('Destination is not a private ungrouped VABU window');
   }
 }
 

@@ -1,0 +1,50 @@
+:root { color-scheme: light dark; font: 14px/1.5 system-ui, sans-serif; color: #211a35; background: #f5f3fa; }
+@supports (-moz-appearance: none) {
+  :root { font-size: 13px; }
+}
+* { box-sizing: border-box; }
+/* A toolbar popup sizes its viewport from this document, not the other way around. */
+body { margin: 0; width: 360px; }
+main { padding: 14px; }
+.header { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+.header img { border-radius: 12px; }
+h1, h2, p { margin: 0; }
+h1 { font-size: 22px; line-height: 1.2; letter-spacing: -.03em; }
+h2 { font-size: 15px; line-height: 1.3; }
+.eyebrow { font-size: 10px; font-weight: 750; letter-spacing: .12em; color: #6245a0; }
+.card { background: #fff; border: 1px solid #ded8ea; border-radius: 14px; padding: 12px; margin-bottom: 8px; }
+.card:last-child { margin-bottom: 0; }
+.card p { margin-top: 6px; color: #50485f; }
+.heading-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.badge { border-radius: 999px; padding: 3px 9px; font-size: 11px; font-weight: 700; background: #ece8f2; color: #554c64; }
+.badge[data-state="online"] { background: #d9f7e7; color: #075b36; }
+.badge[data-state="error"] { background: #ffe3e3; color: #942d2d; }
+button, input { font: inherit; border-radius: 8px; border: 1px solid #bcb3cd; padding: 6px 12px; }
+button { cursor: pointer; color: inherit; background: #fff; font-weight: 650; }
+button:hover:not(:disabled) { border-color: #6840bb; }
+button:disabled { opacity: .6; cursor: not-allowed; }
+button:focus-visible, input:focus-visible { outline: 3px solid #9b7aef; outline-offset: 2px; }
+.primary { background: #5b21b6; border-color: #5b21b6; color: white; }
+.primary:hover:not(:disabled) { background: #4c1d95; }
+#bridge { width: 100%; margin-top: 8px; }
+#screenshot-permission { margin-top: 8px; }
+.actions, .socket-row { display: flex; gap: 8px; margin-top: 6px; }
+.actions button { flex: 1; }
+label { display: block; font-weight: 700; margin-top: 10px; }
+.optional, .hint { font-size: 12px; font-weight: 400; }
+.socket-row input { min-width: 0; width: 100%; background: transparent; color: inherit; }
+#approval-target { overflow-wrap: anywhere; font-weight: 700; }
+.copy-value { display: block; width: 100%; margin-top: 4px; padding: 4px 8px; text-align: left; overflow-wrap: anywhere; }
+#copy-status:empty { margin: 0; }
+#approval-status:not(:empty), #socket-status:not(:empty) { margin: 8px 0; }
+[hidden] { display: none !important; }
+@media (prefers-color-scheme: dark) {
+  :root { color: #f3efff; background: #181420; }
+  .card { background: #262031; border-color: #493d5a; }
+  .card p { color: #d3cadd; }
+  .eyebrow { color: #c4b5fd; }
+  button { background: #342b42; color: #fff; border-color: #78698a; }
+  .primary { background: #a78bfa; border-color: #a78bfa; color: #211138; }
+  .primary:hover:not(:disabled) { background: #c4b5fd; }
+  .badge { background: #42394d; color: #eee8f7; }
+}

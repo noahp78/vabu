@@ -1,0 +1,238 @@
+import { defaultSocketNames, socketNameError, validSocketName } from './socket-name.mjs';
+
+const runtime = (globalThis.browser ?? globalThis.chrome).runtime;
+const status = document.querySelector('#status');
+const bridge = document.querySelector('#bridge');
+const bridgeState = document.querySelector('#bridge-state');
+const effectiveSocket = document.querySelector('#effective-socket');
+const cliHint = document.querySelector('#cli-hint');
+const cliCommand = document.querySelector('#cli-command');
+const copySocket = document.querySelector('#copy-socket');
+const copyCli = document.querySelector('#copy-cli');
+const copyStatus = document.querySelector('#copy-status');
+const socketForm = document.querySelector('#socket-form');
+const socketInput = document.querySelector('#socket');
+const socketStatus = document.querySelector('#socket-status');
+const socketSave = document.querySelector('#socket-save');
+const feedback = document.querySelector('#feedback');
+const feedbackStatus = document.querySelector('#feedback-status');
+let feedbackBusy = false;
+let current;
+let savedSocket = '';
+let busy = false;
+let timer;
+let revision = 0;
+let bridgeActionError;
+
+async function send(message) {
+  const result = await runtime.sendMessage(message);
+  if (!result || result.error) throw new Error(result?.error || 'VABU background did not respond');
+  return result;
+}
+
+function controls() {
+  bridge.disabled = busy || !current;
+  feedback.disabled = busy || feedbackBusy || !current?.connected;
+  copySocket.disabled = copyCli.disabled = busy || !current;
+  socketInput.disabled = socketSave.disabled = busy || !current || current.connected || current.starting;
+}
+
+async function update(message) {
+  if (busy) return;
+  clearTimeout(timer);
+  const request = ++revision;
+  busy = !!message;
+  if (busy) controls();
+  let saved = false;
+  if (message) {
+    bridgeActionError = undefined;
+    socketStatus.textContent = '';
+    try {
+      await send(message);
+      saved = message.action === 'set-socket';
+    } catch (error) {
+      if (message.action === 'set-socket') socketStatus.textContent = error.message;
+      else bridgeActionError = error.message;
+    }
+  }
+  try {
+    const result = await send({ action: 'status' });
+    if (request !== revision) return;
+    current = result;
+    const { connected, starting, browser, socketName, socketOverride, bridgeError } = current;
+    effectiveSocket.textContent = socketName;
+    cliCommand.textContent = `vabu --socket ${socketName} status`;
+    cliHint.hidden = false;
+    socketInput.placeholder = defaultSocketNames[browser];
+    if (browser === 'chrome') connectApproval();
+    if (browser === 'firefox') void refreshScreenshotPermission();
+    if (saved || connected || starting || socketInput.value === savedSocket) socketInput.value = socketOverride ?? '';
+    savedSocket = socketOverride ?? '';
+    if (saved) socketStatus.textContent = 'Socket name saved. Start the local bridge to use it.';
+    if (connected || starting) bridgeActionError = undefined;
+    const error = bridgeError || bridgeActionError;
+    bridge.textContent = connected || starting ? 'Stop local bridge' : 'Start local bridge';
+    status.textContent = error || (connected ? 'Bridge is running.' : starting ? 'Bridge is starting…' : 'Bridge is stopped.');
+    setBadge(error ? 'error' : connected ? 'online' : 'offline');
+  } catch (error) {
+    if (request !== revision) return;
+    current = undefined;
+    effectiveSocket.textContent = 'Unavailable';
+    cliHint.hidden = true;
+    status.textContent = error.message;
+    setBadge('error');
+  } finally {
+    if (request === revision) {
+      busy = false;
+      controls();
+      timer = setTimeout(() => void update(), 1500);
+    }
+  }
+}
+
+function setBadge(state) {
+  if (!bridgeState) return;
+  bridgeState.dataset.state = state;
+  bridgeState.textContent = { online: 'Online', offline: 'Offline', error: 'Error' }[state];
+}
+
+for (const [button, value, label] of [[copySocket, effectiveSocket, 'Socket name'], [copyCli, cliCommand, 'CLI command']]) {
+  button.addEventListener('click', async () => {
+    if (button.disabled) return;
+    try {
+      await navigator.clipboard.writeText(value.textContent);
+      copyStatus.textContent = `${label} copied.`;
+    } catch {
+      copyStatus.textContent = `Could not copy ${label.toLowerCase()}.`;
+    }
+  });
+}
+
+bridge.addEventListener('click', () => {
+  if (current) void update({ action: current.connected || current.starting ? 'stop' : 'start' });
+});
+socketInput.addEventListener('input', () => { socketStatus.textContent = ''; });
+socketForm.addEventListener('submit', (event) => {
+  event.preventDefault();
+  if (socketSave.disabled) return;
+  const socketOverride = socketInput.value || null;
+  if (socketOverride !== null && !validSocketName(socketOverride)) {
+    socketStatus.textContent = socketNameError;
+    return;
+  }
+  void update({ action: 'set-socket', socketOverride });
+});
+
+const approval = document.querySelector('#approval');
+const target = document.querySelector('#approval-target');
+const approvalStatus = document.querySelector('#approval-status');
+const decisions = ['deny', 'allow'].map((decision) => [decision, document.querySelector(`#${decision}`)]);
+let approvalPort;
+let token;
+let approvalAttempted = false;
+
+function connectApproval() {
+  if (approvalAttempted) return;
+  approvalAttempted = true;
+  function unavailable() {
+    token = undefined;
+    approval.hidden = true;
+    approvalStatus.textContent = 'Tab approvals unavailable. Reopen the VABU popup to retry.';
+  }
+  try {
+    approvalPort = runtime.connect({ name: 'tab-approval' });
+    approvalPort.onMessage.addListener(showApproval);
+    approvalPort.onDisconnect.addListener(() => {
+      // Reading lastError also suppresses an unchecked Chrome runtime warning.
+      void runtime.lastError;
+      unavailable();
+    });
+  } catch {
+    unavailable();
+  }
+}
+
+function showApproval({ state, request }) {
+  token = state === 'pending' ? request.token : undefined;
+  approval.hidden = !token;
+  if (token) {
+    target.textContent = `Tab ${request.tab} · ${request.origin}`;
+    for (const [, button] of decisions) button.disabled = false;
+  }
+  approvalStatus.textContent = {
+    allowed: state === 'allowed' ? `Allowed. Ask the requester to retry use ${request.tab}.` : '',
+    denied: 'Tab control denied.',
+    cancelled: 'Tab control request cancelled.',
+    expired: 'Tab control request expired.',
+    used: 'Tab approval used.',
+  }[state] ?? '';
+}
+for (const [decision, button] of decisions) {
+  button.addEventListener('click', (event) => {
+    if (!event.isTrusted || !token) return;
+    for (const [, control] of decisions) control.disabled = true;
+    approvalPort.postMessage({ token, decision });
+  });
+}
+
+const screenshotSection = document.querySelector('#screenshots');
+const screenshotButton = document.querySelector('#screenshot-permission');
+const screenshotStatus = document.querySelector('#screenshot-status');
+const screenshotGrant = { origins: ['<all_urls>'] };
+let screenshotGranted;
+let screenshotBusy = false;
+let screenshotRevision = 0;
+
+async function refreshScreenshotPermission() {
+  const permissions = globalThis.browser?.permissions;
+  if (!permissions || screenshotBusy) return;
+  const revision = ++screenshotRevision;
+  screenshotSection.hidden = false;
+  let granted;
+  try { granted = await permissions.contains(screenshotGrant); } catch {}
+  if (revision !== screenshotRevision) return;
+  screenshotGranted = granted;
+  screenshotButton.disabled = typeof granted !== 'boolean';
+  screenshotButton.textContent = granted ? 'Revoke screenshot access' : 'Enable screenshots';
+}
+
+screenshotButton.addEventListener('click', async (event) => {
+  if (!event.isTrusted || current?.browser !== 'firefox' || screenshotBusy || screenshotButton.disabled) return;
+  ++screenshotRevision;
+  screenshotBusy = screenshotButton.disabled = true;
+  screenshotStatus.textContent = '';
+  const permissions = globalThis.browser.permissions;
+  try {
+    if (screenshotGranted) await permissions.remove(screenshotGrant);
+    else {
+      // Keep the trusted click for Firefox, then get the toolbar popup out of the way.
+      const request = permissions.request(screenshotGrant);
+      window.close();
+      if (!await request) screenshotStatus.textContent = 'All-sites access was not granted.';
+    }
+  } catch (error) {
+    screenshotStatus.textContent = error.message;
+  } finally {
+    screenshotBusy = false;
+    await refreshScreenshotPermission();
+  }
+});
+
+feedback.addEventListener('click', async (event) => {
+  if (!event.isTrusted || feedback.disabled) return;
+  feedbackBusy = true;
+  controls();
+  feedbackStatus.textContent = '';
+  try {
+    await send({ action: 'feedback-start' });
+    window.close();
+  } catch (error) {
+    feedbackStatus.textContent = error.message;
+  } finally {
+    feedbackBusy = false;
+    controls();
+  }
+});
+
+controls();
+void update();
