@@ -27,6 +27,8 @@ The packagers accept one optional output directory. Its parent must exist and th
 
 Run `sh scripts/build.sh` to write `dist/release/`, or pass a fresh output directory. The builder requires npm and `zip`, verifies the same version in both manifests and `package.json`, and creates two extension ZIPs, an npm archive and the offline installer. GitHub Actions attaches previews to `main` builds and creates draft releases for matching version tags. Protect `main` and `v*` tags in GitHub and review a draft before publishing it.
 
+See [store submission](store-submission.md) for listing copy, permission justifications, and reviewer instructions.
+
 ## Browser validation
 
 For the live Linux Chromium tests, set `VABU_TEST_CHROMIUM` to the absolute path of a Chromium or Chrome binary and run the same suite. The tests stage an extension and create a temporary headless profile, loopback fixture, native host and private socket. A skipped live fixture is not browser verification.

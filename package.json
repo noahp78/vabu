@@ -1,6 +1,6 @@
 {
   "name": "@noahp78/vabu",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "description": "VABU local browser bridge and CLI for Chrome and Firefox",
   "license": "MIT",
   "type": "module",

@@ -79,7 +79,11 @@ for (const browser of ['chrome', 'firefox']) {
       }
     }
     if (firefox) {
-      assert.equal(manifest.browser_specific_settings.gecko.id, 'vabu@local.invalid');
+      assert.deepEqual(manifest.browser_specific_settings.gecko, {
+        id: 'vabu@local.invalid',
+        strict_min_version: '140.0',
+        data_collection_permissions: { required: ['browsingActivity', 'websiteContent', 'websiteActivity'] },
+      });
       assert.deepEqual(manifest.background.scripts, ['firefox/background.mjs']);
       assert.equal(manifest.background.service_worker, undefined);
       visit(manifest.background.scripts[0]);
