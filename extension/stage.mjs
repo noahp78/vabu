@@ -1,4 +1,4 @@
-import { copyFile, mkdir } from 'node:fs/promises';
+import { copyFile, mkdir, realpath } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -26,7 +26,8 @@ export async function stageExtension(browser, directory, runtime) {
 }
 
 export async function runPackage(url, browser, stage) {
-  if (!process.argv[1] || url !== pathToFileURL(process.argv[1]).href) return;
+  const entry = process.argv[1];
+  if (!entry || (url !== pathToFileURL(entry).href && fileURLToPath(url) !== await realpath(entry).catch(() => null))) return;
   if (process.argv.length > 3 || process.argv[2] === '') {
     throw new Error(`Usage: node extension/${browser}/package.mjs [NEW_DIRECTORY]`);
   }

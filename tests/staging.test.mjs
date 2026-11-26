@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { cp, mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
+import { cp, mkdtemp, readFile, readdir, rm, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, posix } from 'node:path';
 import test from 'node:test';
@@ -29,7 +29,9 @@ for (const browser of ['chrome', 'firefox']) {
     t.after(() => rm(temp, { recursive: true, force: true }));
     const source = join(temp, 'checkout', 'extension');
     await cp(new URL('../extension/', import.meta.url), source, { recursive: true });
-    const entry = join(source, browser, 'package.mjs');
+    const alias = join(temp, 'source-alias');
+    await symlink(source, alias, 'dir');
+    const entry = join(alias, browser, 'package.mjs');
     const run = (...args) => exec(process.execPath, [entry, ...args], { cwd: temp });
     const output = join(temp, 'checkout', 'dist', browser);
     await run();
