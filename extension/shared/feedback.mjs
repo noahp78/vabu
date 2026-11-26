@@ -1,18 +1,45 @@
-import { webUrl } from './domains.js';
+import { hasHostAccess, webUrl } from './domains.js';
 
-export async function handleFeedback(api, connection, getScope, message, sender) {
+export function invalidateFeedback(connection, tabId) {
+  if (connection?.feedbackLease?.scope.id === tabId) delete connection.feedbackLease;
+}
+
+export async function handleFeedback(api, connection, getBridge, getOwner, message, sender) {
   if (sender.id !== api.runtime.id) throw new Error('Invalid VABU feedback sender');
   if (!connection?.online) throw new Error('Start the local bridge in the VABU popup first');
   if (message.action === 'feedback-start') {
     if (sender.tab || sender.url !== api.runtime.getURL('shared/popup.html')) throw new Error('Use the VABU popup to open feedback');
-    const scope = await getScope();
     const [tab] = await api.tabs.query({ active: true, currentWindow: true });
-    if (tab?.id !== scope.id || tab.incognito) throw new Error('Switch to the selected VABU tab to leave feedback');
-    if ((await scope.verify()).active !== true) throw new Error('The selected tab is no longer active');
-    scope.assertCurrent();
+    if (!tab?.active || tab.incognito || !Number.isInteger(tab.id)) throw new Error('Open a normal website tab to leave feedback');
+    const { id, url: href } = tab;
+    const url = webUrl(href);
+    const owner = getOwner(id);
+    const assertCurrent = () => {
+      if (getBridge() !== connection || connection.feedbackLease !== lease || getOwner(id) !== owner) {
+        throw new Error('Feedback expired. Open Annotate page again.');
+      }
+    };
+    const verify = async () => {
+      assertCurrent();
+      const current = await api.tabs.get(id);
+      const frame = await api.webNavigation?.getFrame?.({ tabId: id, frameId: 0 });
+      if (current?.id !== id || !current.active || current.incognito || current.discarded || current.pendingUrl
+        || current.status !== 'complete' || current.url !== href || frame?.url !== href
+        || typeof frame.documentId !== 'string' || !frame.documentId || frame.errorOccurred
+        || (frame.frameType !== undefined && frame.frameType !== 'outermost_frame')
+        || (frame.documentLifecycle !== undefined && frame.documentLifecycle !== 'active')
+        || (scope.documentId && frame.documentId !== scope.documentId)
+        || !await hasHostAccess(api.permissions, url)) {
+        throw new Error('Cannot verify the active website document or its site access');
+      }
+      assertCurrent();
+      return frame.documentId;
+    };
+    const scope = { id, href, owner, assertCurrent, verify };
     const token = crypto.randomUUID();
     const lease = connection.feedbackLease = { scope, token };
     try {
+      scope.documentId = await verify();
       const results = await api.scripting.executeScript({ target: { tabId: scope.id, documentIds: [scope.documentId] },
         world: 'ISOLATED', func: feedbackInPage, args: [scope.href, token] });
       if (results?.length !== 1 || results[0].documentId !== scope.documentId || results[0].frameId !== 0
@@ -34,7 +61,7 @@ export async function handleFeedback(api, connection, getScope, message, sender)
   if (!scope || message.token !== lease.token || sender.frameId !== 0 || sender.tab?.id !== scope.id
     || sender.tab.incognito || sender.url !== scope.href
     || (sender.documentId !== undefined && sender.documentId !== scope.documentId)) {
-    throw new Error('Feedback must come from the current selected document');
+    throw new Error('Feedback must come from the current active document');
   }
   const url = webUrl(scope.href);
   const page = url.origin + url.pathname;

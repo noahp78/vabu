@@ -14,7 +14,7 @@ import { canReadFrames, createFrameScope } from './frame-read.mjs';
 import { captureOwnedViewport } from './owned-capture.mjs';
 import { captureOptions, captureResponse } from '../shared/capture-jpeg.mjs';
 import { createOwnedDialog } from './owned-dialog.mjs';
-import { handleFeedback, takeFeedback } from '../shared/feedback.mjs';
+import { handleFeedback, invalidateFeedback, takeFeedback } from '../shared/feedback.mjs';
 
 const adapterCommands = { __proto__: null, ...interaction, ...inspection, ...integrations, ...elementCommands, ...waitCommands, ...scopedCommands, ...findCommands };
 for (const verb of ['url', 'tab-info', 'session-start', 'session-handoff', 'session-restore', ...browserWideCommands]) {
@@ -301,12 +301,9 @@ chrome.runtime.onInstalled?.addListener(tryAutoStart);
 chrome.runtime.onMessage.addListener((message, sender, reply) => {
   if (['feedback-start', 'feedback-submit'].includes(message?.action)) {
     const connection = bridge;
-    handleFeedback(chrome, connection, async () => {
-      const s = requireOwnedSelection(connection);
-      const scope = ownedDocumentScope(connection, s);
-      scope.parent.url = (await chrome.tabs.get(s.id)).url;
-      return { ...scope, id: s.id, documentId: scope.parent.documentId, href: scope.parent.url, owner: s.workspace ?? connection };
-    }, message, sender).then(reply, error => reply({ error: error.message }));
+    handleFeedback(chrome, connection, () => bridge, id =>
+      [...connection.workspaces.values()].find(workspace => workspace.tabs.has(id)) ?? connection,
+    message, sender).then(reply, error => reply({ error: error.message }));
     return true;
   }
   if (sender.url !== popupUrl || !['status', 'start', 'stop', 'set-socket'].includes(message?.action)) return false;
@@ -320,6 +317,7 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
 chrome.permissions.onRemoved.addListener(({ origins, permissions }) => {
   if (origins?.length || permissions?.some((permission) => ['webNavigation', 'debugger', 'scripting'].includes(permission))) {
     clearApproval();
+    if (bridge) delete bridge.feedbackLease;
     if (session) void detach(session);
   }
 });
@@ -352,6 +350,7 @@ chrome.debugger.onEvent.addListener(({ tabId, sessionId }, method, params) => {
 });
 
 function forgetTab(tabId) {
+  invalidateFeedback(bridge, tabId);
   if (approval?.id === tabId) clearApproval();
   bridge?.ownedTabs.delete(tabId);
   for (const workspace of bridge?.workspaces.values() ?? []) workspace.tabs.delete(tabId);
@@ -366,7 +365,6 @@ function invalidateFrameScope(tabId) {
 }
 
 function invalidateOwnedDocument(s) {
-  if (bridge?.feedbackLease?.scope.id === s.id) delete bridge.feedbackLease;
   s.lastCapture = undefined;
   s.ownedDocumentVersion = (s.ownedDocumentVersion ?? 0) + 1;
   s.dialogScope?.dialog.dispose();
@@ -376,6 +374,7 @@ function invalidateOwnedDocument(s) {
 function invalidateDocument({ tabId, frameId = 0 }) {
   invalidateFrameScope(tabId);
   if (frameId !== 0) return;
+  invalidateFeedback(bridge, tabId);
   if (approval?.id === tabId) clearApproval();
   if (session?.id !== tabId) return;
   if (session.userDocument) void detach(session);
@@ -388,7 +387,10 @@ navigation?.onHistoryStateUpdated?.addListener(invalidateDocument);
 navigation?.onReferenceFragmentUpdated?.addListener(invalidateDocument);
 navigation?.onErrorOccurred?.addListener(({ tabId, frameId }) => {
   invalidateFrameScope(tabId);
-  if (frameId === 0 && session?.id === tabId) invalidateOwnedDocument(session);
+  if (frameId === 0) {
+    invalidateFeedback(bridge, tabId);
+    if (session?.id === tabId) invalidateOwnedDocument(session);
+  }
 });
 chrome.tabs.onUpdated.addListener((tabId, { status, url, discarded }) => {
   if (status === 'loading' || url !== undefined || discarded) invalidateDocument({ tabId });

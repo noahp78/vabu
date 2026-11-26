@@ -78,9 +78,9 @@ test('Chrome frame reads, viewport captures and dialogs stay within the verified
         return output;
       }
       if (func.name === 'feedbackInPage') {
-        assert.deepEqual(target, { tabId: 2, documentIds: [topFrame.documentId] });
+        assert.deepEqual(target, { tabId: target.tabId, documentIds: [topFrame.documentId] });
         assert.equal(world, 'ISOLATED');
-        assert.equal(args[0], tabs.get(2).url);
+        assert.equal(args[0], tabs.get(target.tabId).url);
         feedbackToken = args[1];
         return [{ documentId: topFrame.documentId, frameId: 0, result: true }];
       }
@@ -109,12 +109,23 @@ test('Chrome frame reads, viewport captures and dialogs stay within the verified
   try {
     await import('../extension/chrome/worker.js');
     assert.deepEqual(await action('start'), { ok: true });
+    const existing = tabs.get(1);
+    existing.active = true;
+    assert.deepEqual(await action('feedback-start'), { ok: true });
+    const sender = { id: 'ext', frameId: 0, documentId: topFrame.documentId, tab: existing, url: existing.url };
+    const submitExisting = () => send({ action: 'feedback-submit', token: feedbackToken,
+      points: [{ note: 'Existing tab', target: null }] }, sender);
+    assert.deepEqual(await submitExisting(), { ok: true });
+    assert.deepEqual((await run('feedback')).value, { feedback: [{ page: existing.url, target: null, note: 'Existing tab' }] });
+    assert.deepEqual(await action('feedback-start'), { ok: true });
+    chrome.webNavigation.onHistoryStateUpdated.fire({ tabId: 1, frameId: 0 });
+    assert.match((await submitExisting()).error, /current active document/);
+    existing.active = false;
     assert.match((await run('use', '1')).error, /Approval required/);
     chrome.runtime.onConnect.fire(popup);
     await popup.onMessage.fire({ token: popup.message.request.token, decision: 'allow' });
     assert.equal(popup.message.state, 'allowed');
     assert.equal((await run('use', '1')).value.tab, 1);
-    assert.match((await action('feedback-start')).error, /opened by VABU/);
     assert.match((await run('frame-list')).error, /opened by VABU/);
     assert.match((await run('frames')).error, /opened by VABU/);
     assert.match((await run('frame-read', 'arbitrary')).error, /opened by VABU/);
@@ -195,7 +206,7 @@ test('Chrome frame reads, viewport captures and dialogs stay within the verified
     const feedbackSender = { id: 'ext', frameId: 0, documentId: topFrame.documentId, tab: tabs.get(tab), url: tabs.get(tab).url };
     const points = [{ note: 'test feedback', target: null }];
     const submit = (sender = feedbackSender) => send({ action: 'feedback-submit', token: feedbackToken, points }, sender);
-    assert.match((await submit({ ...feedbackSender, documentId: 'another-document' })).error, /current selected document/);
+    assert.match((await submit({ ...feedbackSender, documentId: 'another-document' })).error, /current active document/);
     assert.deepEqual(await submit(), { ok: true });
     assert.deepEqual((await scoped('feedback')).value, { feedback: [{ ...points[0], page: tabs.get(tab).url }] });
     tabs.get(tab).active = false;
