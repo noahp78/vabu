@@ -15,5 +15,6 @@ Only select pages you want the CLI to access. Other processes running as your OS
 - [Installation, upgrades and multiple profiles](docs/installation.md)
 - [Browser commands and capability limits](docs/usage.md)
 - [Firefox setup, permissions and differences](docs/firefox.md)
+- [Privacy and local data handling](docs/privacy.md)
 - [Development, architecture and testing](docs/development.md)
 - [Repository guidance for agents](AGENTS.md) and [optional Pi browser skill](SKILL.md)
