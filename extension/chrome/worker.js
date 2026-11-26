@@ -989,6 +989,7 @@ async function command(connection, args, setBeforeReply) {
   }
   if (scoped && verb === 'session-end' && count === 0) {
     if (session?.workspace === workspace) await detach(session);
+    for (const tabId of workspace.tabs) connection.ownedTabs.delete(tabId);
     workspaces.delete(id);
     return { ended: true };
   }

@@ -129,6 +129,12 @@ test('named sessions group their own tabs and reject commands targeting another 
     assert.match(await run('--session', b.sessionId, 'click', '@r1'), /not visible/);
     assert.deepEqual(mouseEvents, ['mouseMoved', 'mousePressed', 'mouseReleased', 'mouseMoved']);
     assert.deepEqual(clickMotion, [false, false, false, true, true]);
+    try {
+      assert.match(await run('use', String(first.tab)), /Approval required/);
+      assert.match(await run('use', String(sibling.tab)), /Approval required/);
+    } finally {
+      await run('release');
+    }
   } finally {
     delete globalThis.chrome;
   }
