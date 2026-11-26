@@ -43,7 +43,7 @@ test('named sessions group their own tabs and reject commands targeting another 
       pageActions.push([target.tabId, args[3]]);
       if (args[3] === 'click') { clickMotion.push(args[6]); afterPreview?.(); }
       const documentId = `document-${target.tabId}`;
-      if (['click', 'confirmClick'].includes(args[3])) assert.deepEqual(target.documentIds, [documentId]);
+      if (['click', 'confirmClick', 'clickReceipt'].includes(args[3])) assert.deepEqual(target.documentIds, [documentId]);
       if (args[3] === 'confirmClick' && !tabs.get(target.tabId).active) {
         assert.equal(args[5], true);
         assert.equal(args[6], tabs.get(target.tabId).url);
@@ -111,9 +111,10 @@ test('named sessions group their own tabs and reject commands targeting another 
     assert.equal(tabs.size, 3);
     assert.equal(tabs.get(second.tab).active, false);
     const click = () => run('--session', b.sessionId, 'click', '@r1');
-    assert.deepEqual(await click(), { x: 10, y: 10, dispatched: true, trusted: false });
+    assert.deepEqual(await click(), { x: 10, y: 10, dispatched: true, trusted: true });
     assert.equal(tabs.get(second.tab).active, false);
-    assert.deepEqual(mouseEvents, []);
+    assert.deepEqual(mouseEvents.splice(0), ['mousePressed', 'mouseReleased']);
+    assert.deepEqual(pageActions.at(-1), [second.tab, 'clickReceipt']);
     afterPreview = () => { tabs.get(second.tab).active = true; };
     assert.match(await click(), /activation changed/);
     assert.deepEqual(mouseEvents, []);
