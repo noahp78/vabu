@@ -74,7 +74,9 @@ test('06–07: typed locators, intersection, scoping, filters, and metadata with
   const field = await call('element', [locator('label', 'Product   code')], ctx);
   assert.equal(field.role, 'textbox');
   assert.ok(!JSON.stringify(field).includes('PRIVATE_VALUE'));
-  assert.equal((await call('query', [locator('css', 'input')], ctx)).count, 1);
+  const inputs = await call('query', [locator('css', 'input')], ctx);
+  assert.equal(inputs.count, 2);
+  assert.ok(!JSON.stringify(inputs).includes('PASSWORD_VALUE'));
   assert.equal((await call('element', [locator('css', 'button', { enabled: false })], ctx)).visible, false);
   await assert.rejects(call('element', [button], ctx), /Ambiguous/);
   await assert.rejects(call('element', [locator('css', 'input[value]')], ctx), /supports only/);

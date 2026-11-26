@@ -552,7 +552,7 @@ function inPage(origin, key, markTitle, operation, arg, y, animate = true, findT
     if (verified && !verified.ok) return verified;
     if (background) {
       const { hit, x, y: clientY } = preview;
-      const blocked = 'iframe,frame,embed,object,fencedframe,portal,[inert],[aria-disabled="true" i],:disabled,input[type=file],input[type=password]';
+      const blocked = 'iframe,frame,embed,object,fencedframe,portal,[inert],[aria-disabled="true" i],:disabled,input[type=file]';
       const labelControl = hit.closest('label')?.control;
       const control = labelControl ?? hit.closest('input,button,textarea');
       if (hit.closest(blocked) || (labelControl && !labelControl.contains(hit)) || control?.closest(blocked)
@@ -592,10 +592,10 @@ function inPage(origin, key, markTitle, operation, arg, y, animate = true, findT
   if (operation === 'type') {
     const field = document.activeElement;
     if (field?.isContentEditable || field?.localName === 'textarea'
-      || (field?.localName === 'input' && ['text', 'search', 'url', 'email', 'tel', 'number'].includes(field.type))) {
+      || (field?.localName === 'input' && ['text', 'search', 'url', 'email', 'tel', 'number', 'password'].includes(field.type))) {
       return ok(true);
     }
-    return fail('Click a text field first; password, file and other non-text fields are not supported');
+    return fail('Click a text field first; file and other non-text fields are not supported');
   }
 
   const find = operation === 'findClick' ? state.find : null;
