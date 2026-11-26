@@ -28,11 +28,11 @@ for browser in chrome firefox; do
   node "extension/$browser/package.mjs" "$scratch/$browser"
   (
     cd "$scratch/$browser"
-    zip -qr "$scratch/release/vacu-$browser-$version.zip" manifest.json "$browser" shared
+    zip -qr "$scratch/release/vabu-$browser-$version.zip" manifest.json "$browser" shared
   )
 done
 npm pack --ignore-scripts --pack-destination "$scratch/release"
 mkdir -p "$(dirname "$output")"
 mkdir "$output" # Do not mix new artifacts with an earlier build.
-cp "$scratch/release/vacu-chrome-$version.zip" "$scratch/release/vacu-firefox-$version.zip" \
-  "$scratch/release/noahp78-vacu-$version.tgz" scripts/install.sh "$output/"
+cp "$scratch/release/vabu-chrome-$version.zip" "$scratch/release/vabu-firefox-$version.zip" \
+  "$scratch/release/noahp78-vabu-$version.tgz" scripts/install.sh "$output/"

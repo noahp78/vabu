@@ -72,8 +72,8 @@ test('release downloads install offline and stage Chrome without changing any in
     await build(output);
     await assert.rejects(build(output), /already exists/);
     const { version } = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));
-    const tgz = `noahp78-vacu-${version}.tgz`;
-    const archives = ['chrome', 'firefox'].map(browser => `vacu-${browser}-${version}.zip`);
+    const tgz = `noahp78-vabu-${version}.tgz`;
+    const archives = ['chrome', 'firefox'].map(browser => `vabu-${browser}-${version}.zip`);
     assert.deepEqual((await readdir(output)).sort(), ['install.sh', tgz, ...archives].sort());
     for (const [index, browser] of ['chrome', 'firefox'].entries()) {
       const files = (await exec('unzip', ['-Z1', join(output, archives[index])], { env })).stdout.trim().split('\n');
@@ -84,15 +84,15 @@ test('release downloads install offline and stage Chrome without changing any in
     }
     const installScript = (...args) => exec('sh', [join(output, 'install.sh'), ...args], { cwd: HOME, env });
     await assert.rejects(installScript('-invalid'), /Usage/);
-    await cp(join(output, tgz), join(output, `noahp78-vacu-extra.tgz`));
+    await cp(join(output, tgz), join(output, `noahp78-vabu-extra.tgz`));
     await assert.rejects(installScript(), /exactly one/);
-    await rm(join(output, 'noahp78-vacu-extra.tgz'));
+    await rm(join(output, 'noahp78-vabu-extra.tgz'));
     const prefix = join(HOME, '.local');
     await assert.rejects(lstat(prefix), { code: 'ENOENT' });
     const { stdout } = await installScript();
     const vabu = (...args) => exec(join(prefix, 'bin/vabu'), args, { cwd: HOME, env });
-    const vacu = (...args) => exec(join(prefix, 'bin/vacu'), args, { cwd: HOME, env });
-    const folder = (await vacu('setup')).stdout.trim();
+    await assert.rejects(lstat(join(prefix, 'bin/vacu')), { code: 'ENOENT' });
+    const folder = (await vabu('setup')).stdout.trim();
     assert.match(stdout, /Chrome extension folder:/);
     assert.ok(stdout.includes(folder));
     assert.equal((await vabu('setup')).stdout.trim(), folder);
@@ -105,7 +105,7 @@ test('release downloads install offline and stage Chrome without changing any in
     const chromeConfig = mac ? join(HOME, 'Library/Application Support/Google/Chrome') : join(XDG_CONFIG_HOME, 'google-chrome');
     const chromeHost = join(chromeConfig, 'NativeMessagingHosts/local.vabu.json');
     await assert.rejects(lstat(chromeHost), { code: 'ENOENT' });
-    await vacu('setup', id);
+    await vabu('setup', id);
     assert.deepEqual(JSON.parse(await readFile(chromeHost, 'utf8')).allowed_origins, [`chrome-extension://${id}/`]);
     const custom = join(HOME, 'Custom Browser');
     await installScript(id, '--config-dir', custom);
@@ -120,7 +120,7 @@ test('release downloads install offline and stage Chrome without changing any in
     await assert.rejects(lstat(join(env.XDG_CACHE_HOME, 'vabu')), { code: 'ENOENT' });
 
     // A changed package stages at a new path; tampering with a cached stage never overwrites it.
-    const source = join(prefix, 'lib/node_modules/@noahp78/vacu/extension/chrome/manifest.json');
+    const source = join(prefix, 'lib/node_modules/@noahp78/vabu/extension/chrome/manifest.json');
     const modified = manifest.replace('Virtual Agentic Browser User', 'New Browser Build');
     assert.notEqual(modified, manifest);
     await writeFile(source, modified);

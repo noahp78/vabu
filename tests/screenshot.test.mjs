@@ -14,13 +14,13 @@ const png = 'iVBORw0KGgo=';
 
 test('screenshot flags normalize to the same strict viewport schema as the worker', () => {
   const { path, dir, options } = parseScreenshotArgs(['shot.jpg', '--threshold', '.25', '--json', '--screenshot-quality', '95'], {
-    VACU_SCREENSHOT_DIR: 'old', VABU_SCREENSHOT_DIR: 'new', VACU_SCREENSHOT_FORMAT: 'png',
+    VABU_SCREENSHOT_DIR: 'new', VABU_SCREENSHOT_FORMAT: 'png',
   });
   assert.equal(path, 'shot.jpg');
   assert.equal(dir, 'new');
   assert.deepEqual(options, { format: 'jpeg', quality: 95, ifChanged: true, threshold: .25 });
   assert.deepEqual(captureOptions([JSON.stringify(options)]), options);
-  assert.equal(parseScreenshotArgs([], { VACU_SCREENSHOT_FORMAT: 'jpg' }).options.format, 'jpeg');
+  assert.equal(parseScreenshotArgs([], { VABU_SCREENSHOT_FORMAT: 'jpg' }).options.format, 'jpeg');
   assert.equal(parseScreenshotArgs([]).options.format, 'png');
   for (const args of [['--annotate'], ['-f'], ['#target', 'x.png'], ['--threshold', '1.1'], ['--threshold', '--json'],
     ['test.png', '--screenshot-format', 'jpeg'], ['--screenshot-quality', '101']]) {

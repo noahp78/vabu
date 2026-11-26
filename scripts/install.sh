@@ -31,12 +31,12 @@ fi
 CDPATH= cd "$(dirname "$0")"
 find_archive() {
   if [ "$#" -ne 1 ] || [ ! -f "$1" ]; then
-    echo 'Put exactly one noahp78-vacu-*.tgz from the same GitHub release next to install.sh.' >&2
+    echo 'Put exactly one noahp78-vabu-*.tgz from the same GitHub release next to install.sh.' >&2
     exit 1
   fi
   archive=$1
 }
-find_archive ./noahp78-vacu-*.tgz
+find_archive ./noahp78-vabu-*.tgz
 prefix="$HOME/.local"
 npm install --global --prefix "$prefix" --ignore-scripts --offline --no-audit --no-fund "$archive"
 cli="$prefix/bin/vabu"
