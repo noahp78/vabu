@@ -34,7 +34,7 @@ export function getElementInPage(origin, overlayKey, property, ref) {
     + 'iframe, frame, fencedframe, portal, object, embed, script, style, template, noscript, '
     + '[hidden], [inert], [aria-hidden="true" i]';
   const excluded = (el) => el.matches(blocked)
-    || el.closest('label')?.control?.matches('input[type=password i], input[type=file i]');
+    || el.closest('label')?.control?.matches('input[type=file i]');
   const rendered = (style) => style.display !== 'none' && style.visibility === 'visible' && style.opacity !== '0'
     && style.contentVisibility !== 'hidden' && style.clipPath === 'none' && style.clip === 'auto'
     && (!style.maskImage || style.maskImage === 'none');

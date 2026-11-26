@@ -64,7 +64,7 @@ export function install(interactionInPage, inspectionPage, scopedSnapshotInPage,
         case 'title': return ok(document.title.slice(0, 200));
         case 'snapshot': {
           state.targets = Array.from(document.querySelectorAll(
-            'a[href], button, input:not([type=hidden],[type=password],[type=file]), select, textarea, summary, [contenteditable=true], [role=button], [role=link]'
+            'a[href], button, input:not([type=hidden],[type=file]), select, textarea, summary, [contenteditable=true], [role=button], [role=link]'
           )).filter((el) => el.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true })).slice(0, 100);
           const controls = state.targets.map((el, i) => ({ ref: `@r${i + 1}`, role: el.getAttribute('role') || el.localName,
             name: (el.getAttribute('aria-label') || el.labels?.[0]?.innerText || (el.isContentEditable ? '' : el.innerText)

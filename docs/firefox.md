@@ -36,7 +36,7 @@ The fixed add-on ID is `vabu@local.invalid` and the host name is `local.vabu`. T
 | `get text\|href @rN` | Reads rendered text or a same-origin HTTP(S) link URL without credentials from a current, visible snapshot ref. Does not read protected/editable targets. |
 | `wait --text TEXT [--timeout MS]` | Waits for text in the selected top document; navigation cancels the wait. |
 | `wait --url URL [--timeout MS]` | Observes the exact URL of the same tab after loading, on the selected origin only. Navigation still releases input and snapshot refs; run `use` and take a new snapshot to resume. Cross-origin navigation, lost access, or closing the tab aborts the wait. |
-| `move`, `hover`, `click`, `scroll`, `type` and the shared interaction adapter verbs | Guarded synthetic DOM input only; a site can ignore untrusted events. No protected password/file controls, frames, native drag/drop, OS shortcuts, or trusted typing. |
+| `move`, `hover`, `click`, `scroll`, `type` and the shared interaction adapter verbs | Guarded synthetic DOM input only; a site can ignore untrusted events. No protected file controls, frames, native drag/drop, OS shortcuts, or trusted typing. |
 | `frame-list`, `frame-read FRAME_ID` | Direct iframe text on Firefox 153+ in the selected VABU-opened tab, in its owning bridge/workspace only. See below. |
 | `screenshot [NEW_FILE.png\|jpg]` | Selected VABU-opened HTTP(S) viewport on Firefox 153+, with explicit optional all-sites access. See below. |
 | Page feedback | Annotate and submit comments on a selected, active VABU-opened page on Firefox 153+. See [page feedback](usage.md#page-feedback). |

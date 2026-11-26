@@ -225,7 +225,7 @@ test('selection replacement, fill, select and checkbox use explicit events witho
 
 test('protected fields and beforeinput changes fail closed', async (t) => {
   const { ctx, doc, field, button, log } = fixture(t);
-  field.type = 'password';
+  field.type = 'file';
   await assert.rejects(commands['insert-text'](['X'], ctx), /protected/);
   assert.equal(log.length, 0);
   field.type = 'text';
@@ -234,6 +234,16 @@ test('protected fields and beforeinput changes fail closed', async (t) => {
   field.cancel = () => { doc.activeElement = button; return false; };
   await assert.rejects(commands['insert-text'](['X'], ctx), /changed during edit/);
   assert.equal(field.value, 'abcd');
+});
+
+test('password fields accept typing and filling', async (t) => {
+  const { ctx, field, log } = fixture(t);
+  field.type = 'password';
+  await commands['insert-text'](['X'], ctx);
+  assert.equal(field.value, 'aXd');
+  await commands.fill(['@r2', 'secret'], ctx);
+  assert.equal(field.value, 'secret');
+  assert.deepEqual(log.map(({ event }) => event.type), ['beforeinput', 'input', 'beforeinput', 'input', 'change']);
 });
 
 test('invalid command arguments never call the adapter', async () => {

@@ -257,7 +257,7 @@ export function inspectionPage(origin, key, operation, spec, frameScope) {
     // shortcut: light DOM and a subset of roles/names, use a reviewed scoped AX adapter for full accessible names.
     const visible = (el) => el.checkVisibility({ visibilityProperty: true, opacityProperty: true });
     const enabled = (el) => !el.matches(':disabled') && !el.closest('[inert], [aria-disabled="true"]');
-    const safe = (el) => !el.closest('script,style,noscript,template,iframe,frame,fencedframe,object,embed,input[type=password i],input[type=file i]');
+    const safe = (el) => !el.closest('script,style,noscript,template,iframe,frame,fencedframe,object,embed,input[type=file i]');
     let owner;
     if (frameScope) {
       const parent = window.parent;
@@ -364,8 +364,8 @@ export function inspectionPage(origin, key, operation, spec, frameScope) {
       if (label && (!label.contains(hit) || !safe(label) || !enabled(label))) throw new Error('Unsupported label control');
       const control = label ?? hit.closest('button,input,textarea');
       if (control?.form && ['image', 'submit', 'reset'].includes(control.type)) throw new Error('Frame form actions are not supported');
-      if (control?.matches('input,textarea') && /(?:^|\s)(?:username|current-password|new-password|one-time-code|webauthn|cc-[\w-]+)(?:\s|$)/i.test(control.autocomplete)) {
-        throw new Error('Credential or payment fields are not supported');
+      if (control?.matches('input,textarea') && /(?:^|\s)(?:webauthn|cc-[\w-]+)(?:\s|$)/i.test(control.autocomplete)) {
+        throw new Error('Payment or passkey fields are not supported');
       }
       const anchor = hit.closest('a,area');
       if (anchor && anchor.namespaceURI !== 'http://www.w3.org/1999/xhtml') throw new Error('Frame link destination is not supported');

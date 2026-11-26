@@ -83,7 +83,7 @@ export function interactionInPage(origin, overlayKey, phase, payload) {
   if (window !== window.top || location.origin !== origin || state?.key !== overlayKey || !state.host.isConnected) {
     return fail('Interaction document changed');
   }
-  const blocked = 'iframe, frame, embed, object, fencedframe, portal, input[type=file], input[type=password], [inert], :disabled';
+  const blocked = 'iframe, frame, embed, object, fencedframe, portal, input[type=file], [inert], :disabled';
   const safe = (element) => {
     if (!element?.isConnected || element.ownerDocument !== document || element.closest(blocked)
       || element.closest('label')?.control?.closest(blocked)) throw new Error('Unavailable, framed, disabled or protected target');
@@ -287,7 +287,7 @@ export function interactionInPage(origin, overlayKey, phase, payload) {
     }
     if (!['insert', 'fill'].includes(payload.kind)) throw new Error('Unsupported interaction operation');
     const editable = field.isContentEditable;
-    const textControl = field instanceof HTMLTextAreaElement || (field.localName === 'input' && ['text', 'search', 'url', 'tel', 'email', 'number'].includes(field.type));
+    const textControl = field instanceof HTMLTextAreaElement || (field.localName === 'input' && ['text', 'search', 'url', 'tel', 'email', 'number', 'password'].includes(field.type));
     if (!(editable || textControl) || field.readOnly) throw new Error('Expected an editable non-protected text field');
     const inserting = payload.kind === 'insert';
     const edit = { ...event, inputType: inserting ? 'insertText' : 'insertReplacementText', data: payload.text };
