@@ -17,6 +17,16 @@ These commands require a currently selected HTTP(S) tab opened by VABU in this b
 - **Chrome only:** **`vabu inspect-dialog show`** returns only `{ "id": "…", "type": "confirm" }` for an observed `alert`, `confirm`, or `prompt`. Use **`vabu inspect-dialog accept ID`** or **`vabu inspect-dialog dismiss ID`** to respond explicitly. No dialog text, default prompt value, or entered text is exposed; supplying prompt text is not supported. `beforeunload`, dialog waits, and browser UI dialogs are not supported.
 - Run `use TAB_ID` on the loaded document **before** triggering a dialog. After a top-level navigation (including same-document URL changes), run `use` again before triggering the next dialog. Dialogs already open before observation or openings that Chrome does not report for the verified root URL must be handled manually. IDs expire on close, replacement, or scope invalidation. Chrome's response API cannot target a browser-issued dialog ID: a manual close, replacement, or navigation can race an in-flight response. If the outcome is indeterminate, check what happened manually; VABU never retries and the old ID must not be reused. Releasing a tab while a modal is open may leave its page indicator until reload.
 
+## Chrome debugging
+
+Open a tab with `vabu open URL`, then select it with `vabu use TAB_ID`. Keep the same `--session ID` for all commands if you opened it in a named session.
+
+- `vabu console reload` starts recording before reloading the selected tab and clears the buffer. Use this to capture errors during startup. Save any unsaved work first.
+- `vabu console start` records without reloading. It cannot promise the complete console history.
+- `vabu console read` returns up to 100 recent console entries and uncaught exceptions from the top-level page at the selected origin, with a count of dropped entries. It does not include iframe, worker or browser network messages. Logs can contain sensitive data.
+- `vabu console stop` stops recording and clears the buffer. Releasing the tab, losing authorization, or leaving the selected origin also ends recording.
+- `vabu js timing` runs a bundled JavaScript diagnostic in the selected document and returns navigation timing milestones in milliseconds. It does not accept JavaScript source or arbitrary expressions.
+
 ## Page feedback
 
 On an active HTTP(S) tab that the browser lets VABU access, open the VABU popup and choose **Annotate page**. The tab does not need to be opened or selected through the CLI. This does not grant the CLI control of the tab. Select an element or choose **Comment on page**, add one or more notes, then click **Ready** to submit. On Firefox this requires version 153 or later.

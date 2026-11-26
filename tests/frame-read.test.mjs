@@ -77,6 +77,10 @@ test('Chrome frame reads, viewport captures and dialogs stay within the verified
         else await onRead?.();
         return output;
       }
+      if (func.name === 'navigationTiming') {
+        assert.deepEqual(target, { tabId: 2, documentIds: [topFrame.documentId] });
+        return [{ documentId: topFrame.documentId, frameId: 0, result: { type: 'reload', load: 42 } }];
+      }
       if (func.name === 'feedbackInPage') {
         assert.deepEqual(target, { tabId: target.tabId, documentIds: [topFrame.documentId] });
         assert.equal(world, 'ISOLATED');
@@ -211,6 +215,39 @@ test('Chrome frame reads, viewport captures and dialogs stay within the verified
     assert.deepEqual((await scoped('feedback')).value, { feedback: [{ ...points[0], page: tabs.get(tab).url }] });
     tabs.get(tab).active = false;
     assert.match((await run('screenshot')).error, /Select a tab for this VABU session/);
+    const emit = (method, params) => chrome.debugger.onEvent.fire({ tabId: tab }, `Runtime.${method}`, params);
+    const context = (id, frameId, contextOrigin = origin) => emit('executionContextCreated', {
+      context: { id, origin: contextOrigin, auxData: { isDefault: true, frameId } },
+    });
+    const log = (executionContextId, value) => emit('consoleAPICalled', { executionContextId, type: 'log', args: [{ value }] });
+    const debugMethods = [];
+    onCdp = (_, method) => {
+      debugMethods.push(method);
+      if (method === 'Page.getFrameTree') return { frameTree: { frame: { id: 'root', url: tabs.get(tab).url } } };
+      if (method === 'Runtime.enable') context(1, 'root');
+      if (method === 'Page.reload') {
+        log(1, 'old document');
+        context(2, 'root');
+        context(3, 'child');
+        context(4, 'root', childOrigin);
+        log(3, 'child');
+        log(4, 'other origin');
+        log(2, 'startup');
+        emit('exceptionThrown', { exceptionDetails: { executionContextId: 2, text: 'Unhandled', lineNumber: 4 } });
+      }
+    };
+    assert.deepEqual((await scoped('console', 'reload')).value, { recording: true });
+    assert.deepEqual(debugMethods, ['Page.getFrameTree', 'Runtime.enable', 'Page.reload']);
+    assert.deepEqual((await scoped('console', 'read')).value, { dropped: 0,
+      entries: [{ level: 'log', text: 'startup' }, { level: 'error', text: 'Unhandled', line: 5 }] });
+    for (let i = 0; i < 100; i++) log(2, 'bounded');
+    const bounded = (await scoped('console', 'read')).value;
+    assert.equal(bounded.dropped, 2);
+    assert.equal(bounded.entries.length, 100);
+    assert.deepEqual((await scoped('console', 'stop')).value, { recording: false });
+    assert.match((await scoped('console', 'read')).error, /Start console recording first/);
+    assert.deepEqual((await scoped('js', 'timing')).value, { type: 'reload', load: 42 });
+    assert.match((await scoped('js', 'document.title')).error, /Usage: vabu js timing/);
     const jpeg = '/9j/AAAA';
     const nav = (frameId = 0) => chrome.webNavigation.onHistoryStateUpdated.fire({ tabId: tab, frameId });
     const dialogEvent = (suffix, params, target = { tabId: tab }) =>
