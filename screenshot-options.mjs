@@ -4,9 +4,9 @@ const imageExtension = /\.(png|jpe?g)$/i;
 export function parseScreenshotArgs(argv, env = {}) {
   const positional = [];
   const options = { ifChanged: false, threshold: 0 };
-  let dir = env.VABU_SCREENSHOT_DIR || env.VACU_SCREENSHOT_DIR || null;
+  let dir = env.VABU_SCREENSHOT_DIR || null;
   let format = null;
-  let quality = env.VABU_SCREENSHOT_QUALITY ?? env.VACU_SCREENSHOT_QUALITY ?? null;
+  let quality = env.VABU_SCREENSHOT_QUALITY ?? null;
   const value = (i, flag) => {
     if (!argv[i + 1] || argv[i + 1].startsWith('--')) throw new Error(`${flag} needs a value`);
     return argv[i + 1];
@@ -32,7 +32,7 @@ export function parseScreenshotArgs(argv, env = {}) {
   if (path !== null && !imageExtension.test(path)) throw new Error('Supply a .png, .jpg or .jpeg path (element selectors are unsupported)');
 
   const fromPath = path && (/\.png$/i.test(path) ? 'png' : 'jpeg');
-  format = (format ?? fromPath ?? env.VABU_SCREENSHOT_FORMAT ?? env.VACU_SCREENSHOT_FORMAT ?? 'png').toLowerCase();
+  format = (format ?? fromPath ?? env.VABU_SCREENSHOT_FORMAT ?? 'png').toLowerCase();
   if (format === 'jpg') format = 'jpeg';
   if (!['png', 'jpeg'].includes(format)) throw new Error('--screenshot-format must be png or jpeg');
   if (fromPath && fromPath !== format) throw new Error(`PATH extension does not match format ${format}`);

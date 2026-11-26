@@ -1,10 +1,10 @@
 {
-  "name": "@noahp78/vacu",
+  "name": "@noahp78/vabu",
   "version": "0.4.1",
   "description": "VABU local browser bridge and CLI for Chrome and Firefox",
   "license": "MIT",
   "type": "module",
-  "bin": { "vabu": "cli.mjs", "vacu": "cli.mjs" },
+  "bin": { "vabu": "cli.mjs" },
   "engines": { "node": ">=22" },
   "files": [
     "cli.mjs",
