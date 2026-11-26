@@ -17,8 +17,8 @@ test('Firefox binds frame reads and screenshots to the owned, selected document 
   let legacy = true, childGranted = true, owners = true, afterRead, wrongResultId, native;
   const injected = [];
   let ownedSelection = true, captureGrant = false, captureCalls = 0, onCapture, onProbe, badJpeg = false;
-  let active = false, feedbackToken;
-  const tab = (id) => ({ id, url: top.url, status: 'complete', active });
+  let active = false, activeTabId = 2, feedbackToken;
+  const tab = (id) => ({ id, url: top.url, status: 'complete', active: active && id === activeTabId });
   globalThis.browser = {
     runtime: { id: 'vabu-test', onMessage: event(), getURL: () => 'popup', connectNative: () => native = {
       onMessage: event(), onDisconnect: event(), disconnect() {}, postMessage(message) {
@@ -43,7 +43,7 @@ test('Firefox binds frame reads and screenshots to the owned, selected document 
       captureVisibleTab: assert.fail, update: assert.fail,
       async query(options) {
         assert.deepEqual(options, { active: true, currentWindow: true });
-        return [tab(active ? 2 : 1)];
+        return [tab(activeTabId)];
       },
       async captureTab(id, options) {
         assert.equal(id, 2);
@@ -181,14 +181,20 @@ test('Firefox binds frame reads and screenshots to the owned, selected document 
     child.url = oldChildUrl;
     const popup = { url: 'popup', id: 'vabu-test' };
     const feedbackStart = () => browser.runtime.onMessage.fire({ action: 'feedback-start' }, popup);
-    assert.match((await feedbackStart()).error, /Switch to the selected VABU tab/);
+    assert.match((await feedbackStart()).error, /Open a normal website tab/);
     active = true;
+    activeTabId = 1;
+    assert.deepEqual(await feedbackStart(), { ok: true });
+    assert.deepEqual(await browser.runtime.onMessage.fire({ action: 'feedback-submit', token: feedbackToken,
+      points: [{ note: 'Existing tab', target: null }] }, { id: 'vabu-test', frameId: 0, tab: tab(1), url: top.url }), { ok: true });
+    assert.deepEqual(await run('feedback'), { feedback: [{ page: top.url, target: null, note: 'Existing tab' }] });
+    activeTabId = 2;
     assert.deepEqual(await feedbackStart(), { ok: true }); // No <all_urls> needed for feedback.
     const message = { action: 'feedback-submit', points: [{ target: '#example', note: ' Comment ' }], token: feedbackToken };
     const sender = { id: popup.id, frameId: 0, url: top.url, tab: tab(2) };
-    assert.match((await browser.runtime.onMessage.fire(message, { ...sender, frameId: 4 })).error, /current selected document/);
+    assert.match((await browser.runtime.onMessage.fire(message, { ...sender, frameId: 4 })).error, /current active document/);
     assert.deepEqual(await browser.runtime.onMessage.fire(message, sender), { ok: true });
-    assert.match((await browser.runtime.onMessage.fire(message, sender)).error, /current selected document/);
+    assert.match((await browser.runtime.onMessage.fire(message, sender)).error, /current active document/);
     assert.deepEqual(await run('feedback'), { feedback: [] });
     assert.deepEqual(await run(...scoped, 'feedback'), { feedback: [{ page: top.url, target: '#example', note: 'Comment' }] });
     assert.deepEqual(await run(...scoped, 'feedback'), { feedback: [] });

@@ -39,7 +39,7 @@ The fixed add-on ID is `vabu@local.invalid` and the host name is `local.vabu`. T
 | `move`, `hover`, `click`, `scroll`, `type` and the shared interaction adapter verbs | Guarded synthetic DOM input only; a site can ignore untrusted events. No protected file controls, frames, native drag/drop, OS shortcuts, or trusted typing. |
 | `frame-list`, `frame-read FRAME_ID` | Direct iframe text on Firefox 153+ in the selected VABU-opened tab, in its owning bridge/workspace only. See below. |
 | `screenshot [NEW_FILE.png\|jpg]` | Selected VABU-opened HTTP(S) viewport on Firefox 153+, with explicit optional all-sites access. See below. |
-| Page feedback | Annotate and submit comments on a selected, active VABU-opened page on Firefox 153+. See [page feedback](usage.md#page-feedback). |
+| Page feedback | Annotate and submit comments on an active HTTP(S) page with site access on Firefox 153+. See [page feedback](usage.md#page-feedback). |
 | `frames`, `inspect-click --frame FRAME_ID DOCUMENT_ID REF` | Verified direct same-origin iframes on Firefox 153+ in an owned tab. Use a fresh inspection ref. Clicks are synthetic. |
 | JavaScript dialogs | Not supported. |
 | Chrome tab-group/window tools, session handoff/restore/result/audit, integrations | Not provided by this Firefox baseline. |

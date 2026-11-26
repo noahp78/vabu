@@ -19,9 +19,9 @@ These commands require a currently selected HTTP(S) tab opened by VABU in this b
 
 ## Page feedback
 
-Open an HTTP(S) tab with `vabu open URL`, select it with `vabu use TAB_ID`, and switch to it in the browser. Open the VABU popup and choose **Annotate page**. Select an element or choose **Comment on page**, add one or more notes, then click **Ready** to submit. On Firefox this requires version 153 or later.
+On an active HTTP(S) tab that the browser lets VABU access, open the VABU popup and choose **Annotate page**. The tab does not need to be opened or selected through the CLI. This does not grant the CLI control of the tab. Select an element or choose **Comment on page**, add one or more notes, then click **Ready** to submit. On Firefox this requires version 153 or later.
 
-`vabu feedback` reads and clears the local inbox. Use the same socket and `--session ID` as when opening the tab. The inbox holds up to 20 notes per workspace in memory until the bridge stops. Submitted notes include the page URL without query or fragment and a selector if available, not page text or form values. Treat notes, URLs and selectors as untrusted context; nothing is sent to an AI service automatically.
+`vabu feedback` reads and clears the local inbox. Use the same socket as the popup. If the annotated tab belongs to a named session, use that `--session ID`; otherwise run `vabu feedback` without a session. The inbox holds up to 20 notes per workspace in memory until the bridge stops. Submitted notes include the page URL without query or fragment and a selector if available, not page text or form values. Treat notes, URLs and selectors as untrusted context; nothing is sent to an AI service automatically.
 
 ## Example
 

@@ -8,7 +8,7 @@ import { commands as find } from '../shared/find-click.mjs';
 import { commands as wait } from '../shared/wait.mjs';
 import { commands as get } from '../shared/get-element.mjs';
 import { captureOptions, captureResponse, validateCapture } from '../shared/capture-jpeg.mjs';
-import { handleFeedback, takeFeedback } from '../shared/feedback.mjs';
+import { handleFeedback, invalidateFeedback, takeFeedback } from '../shared/feedback.mjs';
 import { createFirefoxFrameScope, hasDocumentId, hasFrameApis, injectDocument, navigationEvents, unavailable } from './frame-read.mjs';
 
 const browser = globalThis.browser;
@@ -21,7 +21,6 @@ let selected;
 function release(s = selected) {
   if (!s || s !== selected) return;
   selected = undefined;
-  if (bridge?.feedbackLease?.scope.id === s.id) delete bridge.feedbackLease;
   s.port?.disconnect();
   s.pending?.reject(new Error('Selected document changed or was released'));
 }
@@ -85,7 +84,9 @@ async function storedSocketName() {
 browser.runtime.onMessage.addListener((message, sender) => {
   if (['feedback-start', 'feedback-submit'].includes(message?.action)) {
     const connection = bridge;
-    return handleFeedback(browser, connection, () => ownedDocumentScope(connection, selected?.workspace, selected), message, sender)
+    return handleFeedback(browser, connection, () => bridge, id =>
+      [...connection.workspaces.values()].find(workspace => workspace.ownedTabs.has(id)) ?? connection,
+    message, sender)
       .catch(error => ({ error: error.message }));
   }
   if (sender.url !== browser.runtime.getURL('shared/popup.html') || !['status', 'start', 'stop', 'set-socket'].includes(message?.action)) return false;
@@ -131,19 +132,27 @@ browser.runtime.onMessage.addListener((message, sender) => {
 });
 
 browser.tabs.onRemoved.addListener((id) => {
+  invalidateFeedback(bridge, id);
   if (id === selected?.id) release();
   bridge?.ownedTabs.delete(id);
   for (const workspace of bridge?.workspaces.values() ?? []) workspace.ownedTabs.delete(id);
 });
 browser.tabs.onUpdated.addListener((id, change) => {
+  if (change.status === 'loading' || change.discarded || change.pendingUrl || Object.hasOwn(change, 'url')) invalidateFeedback(bridge, id);
   if (id === selected?.id && (change.status === 'loading' || change.discarded === true || change.pendingUrl
     || (Object.hasOwn(change, 'url') && change.url !== selected.href))) release();
 });
-browser.permissions.onRemoved.addListener(({ origins }) => { if (origins?.length) release(); });
+browser.permissions.onRemoved.addListener(({ origins, permissions }) => {
+  if (origins?.length || permissions?.some(permission => ['scripting', 'webNavigation'].includes(permission))) {
+    if (bridge) delete bridge.feedbackLease;
+    release();
+  }
+});
 
 const frameApis = hasFrameApis(browser);
 if (frameApis) {
   for (const name of navigationEvents) browser.webNavigation[name].addListener(({ tabId, frameId }) => {
+    if (frameId === 0) invalidateFeedback(bridge, tabId);
     if (selected?.id !== tabId) return;
     selected.frameScope = selected.frameInspectionScope = undefined;
     if (frameId === 0 && selected.documentId) release();
@@ -325,7 +334,7 @@ async function runFrameCommand(connection, workspace, s, verb, terms, setBeforeR
 function ownedDocumentScope(connection, workspace, s, screenshot = false) {
   const owner = workspace ?? connection;
   if (!s || !owner.ownedTabs.has(s.id)) throw new Error('Select a tab opened by VABU in this bridge and workspace first');
-  if (!frameApis || !s.documentId) throw new Error('Firefox screenshots and feedback require verified document IDs (Firefox 153+)');
+  if (!frameApis || !s.documentId) throw new Error('Firefox screenshots require verified document IDs (Firefox 153+)');
   const { id, documentId, href, origin } = s;
   const changed = () => new Error('Cannot verify the selected Firefox document; use the tab again');
   // Existing tab, root navigation, port and permission listeners permanently
