@@ -409,7 +409,7 @@ async function page(s, operation, ...args) {
   if (operation === 'clear') target.documentIds = [s.documentId];
   else if (session !== s) throw new Error('Tab is no longer authorized');
   else {
-    if (operation === 'confirmClick') target.documentIds = [args.shift()];
+    if (operation === 'confirmClick' || operation === 'clickReceipt') target.documentIds = [args.shift()];
     if (operation === 'findClick' || operation === 'click') target.documentIds = [args.pop()];
     if (s.userDocument) {
       await checkedTab(s);
@@ -536,6 +536,11 @@ function inPage(origin, key, markTitle, operation, arg, y, animate = true, findT
       void Promise.allSettled(animations.map((animation) => animation.finished)).then(() => finish(!document.hidden));
     });
   }
+  if (operation === 'clickReceipt') {
+    const received = state.clickReceived;
+    delete state.clickReceived;
+    return received ? ok(true) : fail('Click delivery not confirmed at target; inspect before retrying');
+  }
   if (operation === 'confirmClick') {
     const preview = state.preview;
     const find = preview?.find;
@@ -570,8 +575,13 @@ function inPage(origin, key, markTitle, operation, arg, y, animate = true, findT
           || !['', '_self'].includes(target.toLowerCase()) || (url && (!/^https?:$/.test(url.protocol)
             || url.origin !== origin || url.username || url.password))) return fail('This link cannot be clicked in the background');
       }
-      hit.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, composed: true,
-        clientX: x, clientY, view: window, detail: 1 }));
+      const receipt = {};
+      state.clickReceived = false;
+      state.clickAttempt = receipt;
+      hit.addEventListener('click', e => {
+        if (state.clickAttempt === receipt && e.isTrusted && e.target === hit && e.button === 0
+          && e.clientX === Math.floor(x) && e.clientY === Math.floor(clientY)) state.clickReceived = true;
+      }, { capture: true, once: true, signal: AbortSignal.timeout(5000) });
     }
     return ok(true);
   }
@@ -706,20 +716,27 @@ async function click(connection, s, target, y, wasActive, documentId = s.documen
     if ((await scope.verify()).active !== false) throw new Error('Click cancelled: tab activation changed');
     scope.assertCurrent();
     await page(s, 'confirmClick', documentId, findTicket ?? null, true, scope.parent.url);
-    return { ...point, dispatched: true, trusted: false };
-  }
-  await cdp(s, 'Input.dispatchMouseEvent', { ...point, type: 'mouseMoved' });
-  if (!documentId || !await waitForCursor(s) || !(await checkedTab(s)).active) {
-    throw new Error('Click cancelled: selected tab is not visible');
-  }
-  if (s.documentId !== documentId) throw new Error('Click cancelled: selected document changed');
-  const epoch = s.ownedDocumentVersion;
-  await page(s, 'confirmClick', documentId, ...(findTicket ? [findTicket] : []));
-  if (!(await checkedTab(s)).active || s.documentId !== documentId || s.ownedDocumentVersion !== epoch) {
-    throw new Error('Click cancelled: selected tab or document changed');
+    if ((await scope.verify()).active !== false) throw new Error('Click cancelled: tab activation changed');
+    scope.assertCurrent();
+  } else {
+    await cdp(s, 'Input.dispatchMouseEvent', { ...point, type: 'mouseMoved' });
+    if (!documentId || !await waitForCursor(s) || !(await checkedTab(s)).active) {
+      throw new Error('Click cancelled: selected tab is not visible');
+    }
+    if (s.documentId !== documentId) throw new Error('Click cancelled: selected document changed');
+    const epoch = s.ownedDocumentVersion;
+    await page(s, 'confirmClick', documentId, ...(findTicket ? [findTicket] : []));
+    if (!(await checkedTab(s)).active || s.documentId !== documentId || s.ownedDocumentVersion !== epoch) {
+      throw new Error('Click cancelled: selected tab or document changed');
+    }
   }
   await cdp(s, 'Input.dispatchMouseEvent', { ...point, type: 'mousePressed', button: 'left', buttons: 1, clickCount: 1 });
   await cdp(s, 'Input.dispatchMouseEvent', { ...point, type: 'mouseReleased', button: 'left', clickCount: 1 });
+  if (scope) {
+    scope.assertCurrent();
+    await page(s, 'clickReceipt', documentId);
+    return { ...point, dispatched: true, trusted: true };
+  }
   return { ...point, dispatched: true };
 }
 
