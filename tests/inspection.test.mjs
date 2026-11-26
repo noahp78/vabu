@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { commands, inspectionPage } from '../extension/inspection.mjs';
+import { runInNewContext } from 'node:vm';
+import { commands, inspectionPage } from '../extension/shared/inspection.mjs';
 
 const locator = (by, value, extra) => JSON.stringify({ all: [{ by, value }], ...extra });
 const button = locator('role', 'button');
@@ -15,8 +16,6 @@ function context(overrides = {}) {
 
 function fixture(t) {
   const page = { location: new URL(origin), origin, scrollX: 7, scrollY: 11 };
-  page.window = {};
-  page.window.top = page.window;
   const rect = { x: 2, y: 3, width: 50, height: 10 };
   function element(localName, options = {}) {
     const el = {
@@ -42,7 +41,7 @@ function fixture(t) {
     querySelectorAll: (css) => all.filter((el) => el.isConnected && el.matches(css)),
   };
   for (const el of all) el.ownerDocument = page.document;
-  const props = [...Object.keys(page), 'vacuInspectionState'];
+  const props = [...Object.keys(page), 'vabuInspectionState'];
   const original = Object.fromEntries(props.map((prop) => [prop, Object.getOwnPropertyDescriptor(globalThis, prop)]));
   t.after(() => {
     for (const key of props) {
@@ -154,6 +153,49 @@ test('08: the isolated operation refuses mismatched and opaque origins', async (
   globalThis.origin = origin;
   location.href = 'http://127.0.0.1:9001';
   await assert.rejects(call('query', [button], ctx), /not authorized/);
+});
+
+test('verified iframe click requires the live ref, visible owner and hit in both documents', () => {
+  const events = [];
+  const rect = { left: 0, top: 0, right: 30, bottom: 30 };
+  const childDocument = { designMode: 'off', contentType: 'text/html', readyState: 'complete' };
+  const topDocument = {};
+  const props = { transform: 'none', scale: 'none', rotate: 'none', translate: 'none', perspective: 'none', offsetPath: 'none',
+    zoom: '1', borderLeftWidth: '0', paddingLeft: '0', borderTopWidth: '0', paddingTop: '0' };
+  const parent = { origin, location: new URL(origin), document: topDocument, innerHeight: 100, innerWidth: 100, getComputedStyle: () => props };
+  const window = { top: parent, parent };
+  const attributes = new Set();
+  const owner = { namespaceURI: 'http://www.w3.org/1999/xhtml', localName: 'iframe', contentWindow: window,
+    contentDocument: childDocument, getRootNode: () => topDocument, hasAttribute: (key) => attributes.has(key),
+    checkVisibility: () => true, matches: () => false, closest: () => null, getBoundingClientRect: () => rect };
+  window.frameElement = owner;
+  const control = { ownerDocument: childDocument, isConnected: true, getBoundingClientRect: () => rect, checkVisibility: () => true,
+    contains: (node) => node === control, closest: () => null, matches: () => false, dispatchEvent: (event) => events.push(event) };
+  childDocument.elementFromPoint = () => control;
+  topDocument.elementFromPoint = () => owner;
+  const href = new URL('/frame', origin).href;
+  const generation = crypto.randomUUID();
+  const context = { window, document: childDocument, location: new URL(href), origin, innerWidth: 100, innerHeight: 100,
+    MouseEvent: class { constructor(type, init) { Object.assign(this, { type, ...init, isTrusted: false }); } },
+    vabuInspectionState: { key: 'scope', href, generation, refs: [control] } };
+  const run = (ref = `@i${generation}:1`) => runInNewContext(`(${inspectionPage})(origin, 'scope', 'click', ref, scope)`, {
+    ...context, ref, scope: { href, parentHref: parent.location.href },
+  });
+  attributes.add('sandbox');
+  assert.match(run().error, /not an authorized visible iframe/);
+  attributes.clear();
+  topDocument.elementFromPoint = () => null;
+  assert.match(run().error, /covered or unavailable/);
+  topDocument.elementFromPoint = () => owner;
+  props.zoom = '2';
+  assert.match(run().error, /coordinate mapping/);
+  props.zoom = '1';
+  assert.match(run(`@i${crypto.randomUUID()}:1`).error, /Stale/);
+  assert.deepEqual(events, []);
+  assert.equal(run().value.trusted, false);
+  assert.equal(events[0].type, 'click');
+  assert.equal(events[0].isTrusted, false);
+  assert.equal(events[0].clientX, 15);
 });
 
 test('09: bounded waits observe document and locator conditions, refusing ambiguity and late work', async (t) => {

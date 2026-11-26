@@ -79,7 +79,7 @@ export const commands = {
 export function interactionInPage(origin, overlayKey, phase, payload) {
   const ok = (value) => ({ ok: true, value });
   const fail = (error) => ({ error });
-  const state = globalThis.piChrome;
+  const state = globalThis.vabuCursorState;
   if (window !== window.top || location.origin !== origin || state?.key !== overlayKey || !state.host.isConnected) {
     return fail('Interaction document changed');
   }

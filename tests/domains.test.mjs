@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
-import { hasHostAccess, webUrl } from '../extension/domains.js';
+import { hasHostAccess, webUrl } from '../extension/shared/domains.js';
 
 test('all web hosts are requested, but Chrome decides access to each host', async () => {
-  const manifest = JSON.parse(readFileSync(new URL('../extension/manifest.json', import.meta.url), 'utf8'));
+  const manifest = JSON.parse(readFileSync(new URL('../extension/chrome/manifest.json', import.meta.url), 'utf8'));
   assert.deepEqual(manifest.host_permissions, ['http://*/*', 'https://*/*']);
   assert.equal(manifest.incognito, 'not_allowed');
   const checked = [];

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { commands, interactionInPage } from '../extension/interaction.mjs';
+import { commands, interactionInPage } from '../extension/shared/interaction.mjs';
 
 const origin = 'http://127.0.0.1:8888';
 
@@ -45,7 +45,7 @@ function fixture(t) {
   doc.elementFromPoint = () => button;
   doc.activeElement = field;
   const globals = {
-    piChrome: state, document: doc, location: { origin }, window: top, innerWidth: 100, innerHeight: 100,
+    vabuCursorState: state, document: doc, location: { origin }, window: top, innerWidth: 100, innerHeight: 100,
     matchMedia: () => ({ matches: false }), getComputedStyle: (node) => node.styles ?? {},
     Event: FakeEvent, MouseEvent: FakeEvent, PointerEvent: FakeEvent, KeyboardEvent: FakeEvent, WheelEvent: FakeEvent,
     InputEvent: FakeEvent, HTMLTextAreaElement: class {}, HTMLSelectElement: select.constructor,
@@ -92,9 +92,9 @@ test('abort after navigation, changed hit, same-node href change, or iframe over
   ctx.waitForCursor = async () => { location.origin = 'http://other.test'; };
   await assert.rejects(click(), /document changed/);
   location.origin = origin;
-  ctx.waitForCursor = async () => { globalThis.piChrome = { ...state }; delete globalThis.piChrome.interactionPreview; };
+  ctx.waitForCursor = async () => { globalThis.vabuCursorState = { ...state }; delete globalThis.vabuCursorState.interactionPreview; };
   await assert.rejects(click(), /preview expired/);
-  globalThis.piChrome = state;
+  globalThis.vabuCursorState = state;
   ctx.waitForCursor = async () => { doc.elementFromPoint = () => element('button'); };
   await assert.rejects(click(), /Target changed/);
   const link = Object.assign(element('a'), { href: `${origin}/one` });

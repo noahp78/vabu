@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { commands, createSessionState, setSessionDataOptIn } from '../extension/sessions.mjs';
+import { commands, createSessionState, setSessionDataOptIn } from '../extension/chrome/sessions.mjs';
 
 function fixture() {
   const origin = 'http://127.0.0.1:8123';
@@ -89,7 +89,7 @@ test('12: navigation rejects a stale selected document or URL', async () => {
 
 test('13: group creation is limited to owned, ungrouped tabs', async () => {
   const { tab, ctx, run, calls } = fixture();
-  await assert.rejects(run('tab-group-new'), /VACU-created/);
+  await assert.rejects(run('tab-group-new'), /VABU-created/);
   ctx.sessionState.tabs.add(tab.id);
   tab.groupId = 46;
   await assert.rejects(run('tab-group-new'), /ungrouped/);

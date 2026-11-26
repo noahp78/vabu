@@ -3,7 +3,7 @@ const refPattern = /^@i[\da-f-]{36}:[1-9]\d?$/;
 const only = (obj, keys) => obj && typeof obj === 'object' && !Array.isArray(obj)
   && Object.keys(obj).every((key) => keys.includes(key));
 
-export function selector(input) {
+function selector(input) {
   if (typeof input !== 'string' || input.length > 4096) throw new Error('Expected a bounded JSON locator');
   let spec;
   try { spec = JSON.parse(input); } catch { throw new Error('Invalid JSON locator'); }
@@ -23,9 +23,9 @@ export function selector(input) {
       value = value.replace(/\s*>\s*/g, '>').replace(/\s+/g, ' ');
       const valid = (part) => {
         if (!part) return false;
-        const withoutData = part.replace(dataPresence, '.vacu-attribute');
+        const withoutData = part.replace(dataPresence, '.vabu-attribute');
         const structural = /^input(?=[.#\[])/i.test(part)
-          ? withoutData.replace(inputAttribute, '.vacu-attribute') : withoutData;
+          ? withoutData.replace(inputAttribute, '.vabu-attribute') : withoutData;
         return compound.test(structural);
       };
       if (!value.split(/[> ]/).every(valid)) {
@@ -200,6 +200,44 @@ async function clickFrame(args, ctx) {
   return result;
 }
 
+const frameInspectionCommands = ['inspect-query', 'inspect-element', 'inspect-wait', 'inspect-click'];
+export const isFrameInspection = (verb, terms) => verb === 'frames' || (terms[0] === '--frame' && frameInspectionCommands.includes(verb));
+
+// The browser adapter owns the epoch and verifies both document IDs on every injection.
+export async function runListedFrameInspection(verb, terms, scope, assertCurrent, setBeforeReply) {
+  if (verb === 'frames') {
+    await scope.discover(true);
+    const value = [];
+    for (const [handle, child] of scope.frames) {
+      try {
+        const result = await scope.inspect(child, 'scope');
+        if (result?.ok === true && result.value === true) {
+          value.push({ frameId: child.frameId, documentId: child.documentId });
+          continue;
+        }
+      } catch { assertCurrent(); }
+      scope.frames.delete(handle);
+    }
+    setBeforeReply(scope.verifyParent, assertCurrent);
+    return value;
+  }
+  return commands[verb](terms, {
+    assertCurrent,
+    inspectionScope: (frameId, documentId) => {
+      const child = [...(scope?.frames.values() ?? [])].find(child => child.frameId === frameId && child.documentId === documentId);
+      if (!child) throw new Error('Frame is stale or unavailable; run frames again');
+      const run = async (operation, spec) => {
+        const result = await scope.inspect(child, operation, spec);
+        if (result?.ok !== true) throw new Error(result?.error || 'Frame inspection failed');
+        return result.value;
+      };
+      const verify = async () => { if (await run('scope') !== true) throw new Error('Frame is unavailable'); };
+      setBeforeReply(verify, assertCurrent);
+      return { documentId, assertCurrent: verify, run };
+    },
+  });
+}
+
 export const commands = {
   'inspect-click': clickFrame,
   'inspect-query': (args, ctx) => inspect(args, ctx, 'query'),
@@ -210,7 +248,7 @@ export const commands = {
 };
 
 // Self-contained fixed function for chrome.scripting.executeScript, ISOLATED world only.
-export function inspectionPage(origin, key, operation, spec, ancestors, href) {
+export function inspectionPage(origin, key, operation, spec, frameScope) {
   try {
     if (typeof key !== 'string' || !key || !/^https?:$/.test(location.protocol)
       || location.origin !== origin || globalThis.origin !== origin) {
@@ -220,6 +258,23 @@ export function inspectionPage(origin, key, operation, spec, ancestors, href) {
     const visible = (el) => el.checkVisibility({ visibilityProperty: true, opacityProperty: true });
     const enabled = (el) => !el.matches(':disabled') && !el.closest('[inert], [aria-disabled="true"]');
     const safe = (el) => !el.closest('script,style,noscript,template,iframe,frame,fencedframe,object,embed,input[type=password i],input[type=file i]');
+    let owner;
+    if (frameScope) {
+      const parent = window.parent;
+      owner = window.frameElement;
+      if (window === window.top || parent !== window.top || parent.origin !== origin || parent.location.href !== frameScope.parentHref
+        || location.href !== frameScope.href || document.contentType !== 'text/html' || document.readyState !== 'complete'
+        || document.designMode.toLowerCase() !== 'off' || owner?.namespaceURI !== 'http://www.w3.org/1999/xhtml'
+        || owner.localName !== 'iframe' || owner.contentWindow !== window || owner.contentDocument !== document
+        || owner.getRootNode() !== parent.document || owner.hasAttribute('sandbox') || owner.hasAttribute('srcdoc')
+        || !visible(owner) || !enabled(owner) || owner.closest('[hidden],[aria-hidden="true" i]')) {
+        throw new Error('Frame is not an authorized visible iframe');
+      }
+      const box = owner.getBoundingClientRect();
+      if (box.right <= 0 || box.bottom <= 0 || box.left >= parent.innerWidth || box.top >= parent.innerHeight) {
+        throw new Error('Frame is outside the viewport');
+      }
+    }
     const plain = (str) => str?.slice(0, 2048).replace(/\s+/g, ' ').trim() ?? '';
     const text = (el) => visible(el) ? plain(el.innerText) : '';
     const label = (el) => plain(Array.from(el.labels ?? [], text).join(' '));
@@ -238,7 +293,7 @@ export function inspectionPage(origin, key, operation, spec, ancestors, href) {
     };
     const ok = (value) => ({ ok: true, value });
     // The adapter key includes the selection and navigation epoch, including same-document navigation.
-    const state = globalThis.vacuInspectionState;
+    const state = globalThis.vabuInspectionState;
     const resolveRef = (value) => {
       const [generation, index] = value.slice(2).split(':');
       const el = state?.refs[Number(index) - 1];
@@ -282,70 +337,43 @@ export function inspectionPage(origin, key, operation, spec, ancestors, href) {
       return { tag: el.localName, role: role(el), name: name(el).slice(0, 150), text: text(el).slice(0, 500),
         visible: visible(el), enabled: enabled(el), rect: { x, y, width, height } };
     }
-    if (ancestors) {
-      const actual = Array.from(location.ancestorOrigins ?? []);
-      if (location.href !== href || (window === window.top) !== (ancestors.length === 0)
-        || actual.length !== ancestors.length || actual.some((value, i) => value !== ancestors[i])) {
-        throw new Error('Frame origin or ancestry could not be verified');
-      }
-    }
-    const sameOriginChain = !ancestors || ancestors.every((value) => value === origin);
-    const owners = [];
-    if (sameOriginChain) {
-      for (let current = window; current !== window.top; current = current.parent) {
-        const frame = current.frameElement;
-        if (current.origin !== origin || current.parent.origin !== origin || frame?.localName !== 'iframe'
-          || frame.getRootNode() !== frame.ownerDocument || frame.hasAttribute('sandbox')
-          || frame.hasAttribute('srcdoc') || !visible(frame)) throw new Error('Frame is not an authorized visible iframe');
-        owners.push(frame);
-      }
-    }
-    if (operation === 'scope' && ancestors) return ok(true);
+    if (operation === 'scope' && owner) return ok(true);
     if (operation === 'click') {
-      if (!sameOriginChain) throw new Error('Cross-origin frames are inspection-only; ancestor hit testing is unavailable');
-      if (window === window.top) throw new Error('Frame required');
+      if (!owner) throw new Error('Frame required');
       const el = resolveRef(spec);
       if (!visible(el) || !enabled(el)) throw new Error('Frame control is hidden or disabled');
       const rect = el.getBoundingClientRect();
-      const x = (Math.max(0, rect.left) + Math.min(innerWidth, rect.right)) / 2;
-      const y = (Math.max(0, rect.top) + Math.min(innerHeight, rect.bottom)) / 2;
+      const left = Math.max(0, rect.left), right = Math.min(innerWidth, rect.right);
+      const top = Math.max(0, rect.top), bottom = Math.min(innerHeight, rect.bottom);
+      if (left >= right || top >= bottom) throw new Error('Frame control is outside the viewport');
+      const x = (left + right) / 2, y = (top + bottom) / 2;
       const hit = document.elementFromPoint(x, y);
       if (!hit || !el.contains(hit) || !safe(hit) || !enabled(hit)) throw new Error('Frame control is covered or unavailable');
-      let px = x;
-      let py = y;
-      for (const frame of owners) {
-        const parent = frame.ownerDocument;
-        // shortcut: refuse transformed/zoomed owners until their coordinate mapping is supported.
-        for (let node = frame; node; node = node.parentElement) {
-          const style = parent.defaultView.getComputedStyle(node);
-          if (['transform', 'scale', 'rotate', 'translate', 'perspective', 'offsetPath'].some((prop) => style[prop] !== 'none')
-            || !['normal', '1'].includes(style.zoom)) throw new Error('Frame coordinate mapping is not supported');
-        }
-        const style = parent.defaultView.getComputedStyle(frame);
-        const box = frame.getBoundingClientRect();
-        px += box.left + parseFloat(style.borderLeftWidth) + parseFloat(style.paddingLeft);
-        py += box.top + parseFloat(style.borderTopWidth) + parseFloat(style.paddingTop);
-        if (!enabled(frame) || parent.elementFromPoint(px, py) !== frame) throw new Error('Frame control is covered or unavailable');
+      const parent = window.parent;
+      for (let node = owner; node; node = node.parentElement) {
+        const style = parent.getComputedStyle(node);
+        if (['transform', 'scale', 'rotate', 'translate', 'perspective', 'offsetPath'].some(prop => style[prop] !== 'none')
+          || !['normal', '1'].includes(style.zoom)) throw new Error('Frame coordinate mapping is not supported');
       }
-      const labelControl = hit.closest('label')?.control;
-      // Native label activation can focus its associated control, even for synthetic clicks.
-      if (labelControl && (!labelControl.contains(hit) || !safe(labelControl) || !enabled(labelControl))) {
-        throw new Error('Unsupported label control');
-      }
-      const control = labelControl ?? hit.closest('button,input,textarea');
+      const style = parent.getComputedStyle(owner);
+      const box = owner.getBoundingClientRect();
+      const px = x + box.left + parseFloat(style.borderLeftWidth) + parseFloat(style.paddingLeft);
+      const py = y + box.top + parseFloat(style.borderTopWidth) + parseFloat(style.paddingTop);
+      if (parent.document.elementFromPoint(px, py) !== owner) throw new Error('Frame control is covered or unavailable');
+      const label = hit.closest('label')?.control;
+      if (label && (!label.contains(hit) || !safe(label) || !enabled(label))) throw new Error('Unsupported label control');
+      const control = label ?? hit.closest('button,input,textarea');
       if (control?.form && ['image', 'submit', 'reset'].includes(control.type)) throw new Error('Frame form actions are not supported');
       if (control?.matches('input,textarea') && /(?:^|\s)(?:username|current-password|new-password|one-time-code|webauthn|cc-[\w-]+)(?:\s|$)/i.test(control.autocomplete)) {
         throw new Error('Credential or payment fields are not supported');
       }
       const anchor = hit.closest('a,area');
-      if (anchor && anchor.namespaceURI !== 'http://www.w3.org/1999/xhtml') {
-        throw new Error('Frame link destination is not supported');
-      }
+      if (anchor && anchor.namespaceURI !== 'http://www.w3.org/1999/xhtml') throw new Error('Frame link destination is not supported');
       if (anchor?.hasAttribute('href')) {
         const target = anchor.getAttribute('target') || document.querySelector('base[target]')?.getAttribute('target') || '';
         const url = new URL(anchor.getAttribute('href'), document.baseURI);
         if (anchor.hasAttribute('download') || anchor.hasAttribute('ping') || !['', '_self'].includes(target.toLowerCase())
-          || !['http:', 'https:'].includes(url.protocol) || url.origin !== origin || url.username || url.password) {
+          || !/^https?:$/.test(url.protocol) || url.origin !== origin || url.username || url.password) {
           throw new Error('Frame link destination is not supported');
         }
       }
@@ -374,7 +402,7 @@ export function inspectionPage(origin, key, operation, spec, ancestors, href) {
       const refs = matches.slice(0, 50);
       const generation = crypto.randomUUID();
       const items = refs.map((el, i) => ({ ...metadata(el), ref: `@i${generation}:${i + 1}` }));
-      globalThis.vacuInspectionState = { key, href: location.href, generation, refs };
+      globalThis.vabuInspectionState = { key, href: location.href, generation, refs };
       return ok({ count: matches.length, items, truncated: matches.length > refs.length });
     }
     throw new Error('Unsupported inspection operation');

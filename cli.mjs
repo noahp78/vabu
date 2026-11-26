@@ -1,64 +1,65 @@
 #!/usr/bin/env node
 import { randomBytes } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
-import { createConnection } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { runInNewContext } from 'node:vm';
 import { parseScreenshotArgs, screenshotFileName } from './screenshot-options.mjs';
-import { privateDirectory, requestLimit, responseLimit, socketPath } from './socket.mjs';
+import { createConnection } from 'node:net';
+import { runInNewContext } from 'node:vm';
+import { privateSocketDirectory, requestLimit, responseLimit, socketPath } from './socket.mjs';
+import { defaultSocketNames } from './extension/shared/socket-name.mjs';
 
-const usage = `vacu setup                     Print the unpacked Chrome extension folder
-vacu setup CHROME_EXTENSION_ID | --firefox  Register the native bridge on macOS or Linux
-vacu status | tabs | use TAB_ID | release
-vacu open URL                  Open a background tab; run use TAB_ID before wait or snapshot
-vacu feedback                  Read and clear submitted page comments for the current bridge
-vacu snapshot                  Page text and control references
-vacu --pretty COMMAND ...      Indent JSON for human readers (default: compact)
-vacu [--session ID] snapshot --brief  Short page preview with clickable refs
-vacu [--session ID] snapshot --find TEXT   Find controls by name; keep clickable refs
-vacu [--session ID] snapshot --regex PATTERN   Match control names with a case-insensitive regex
-vacu [--session ID] snapshot --role ROLE [--find TEXT | --regex PATTERN]
-vacu snapshot --within SELECTOR [--role ROLE]
-vacu find role ROLE --name NAME click
-vacu wait --url URL | --text TEXT [--timeout MS]
-vacu get text|href @rN
-vacu [--session ID] inspect-query --brief LOCATOR_JSON  Short match list
-vacu click @rN | click X Y     Click a fresh control or viewport point
-vacu move X Y | hover @rN      Move the virtual cursor to a point or control
-vacu type TEXT                 Insert text into the focused text field
-vacu scroll DY [@rN]           Wheel-scroll over the cursor or a control
-vacu screenshot [SELECTOR] [PATH]  Save a PNG/JPEG of the viewport, @rN or a CSS-selected element (Chrome)
-    --full, -f                 Capture the full page, not just the viewport
-    --annotate                 Take a snapshot and label each control [N] = @rN; prints the legend
-    --if-changed               Skip writing if the image matches the previous capture of this tab
-    --threshold 0-1            Changed-pixel ratio still treated as unchanged (implies --if-changed)
-    --screenshot-dir DIR       Directory when no PATH is given (VACU_SCREENSHOT_DIR, default: temp)
-    --screenshot-format FMT    png (default) or jpeg (VACU_SCREENSHOT_FORMAT, or PATH extension)
-    --screenshot-quality 0-100 JPEG quality (VACU_SCREENSHOT_QUALITY)
-vacu cursor-move TARGET | mouse-click BUTTON MODIFIERS TARGET | double-click TARGET
-vacu drag X1 Y1 X2 Y2 | wheel DX DY [TARGET] | keypress CHORD
-vacu insert-text TEXT | fill @rN TEXT | select-option @rN VALUE | set-checked @rN true|false
-vacu inspect-query LOCATOR_JSON | inspect-element LOCATOR_JSON
-vacu frames                    List same-origin iframe IDs and document IDs (Chrome)
-vacu inspect-query [--brief] --frame ID DOCUMENT_ID LOCATOR_JSON
-vacu inspect-click --frame ID DOCUMENT_ID @iREF
-vacu inspect-wait visible|hidden TIMEOUT_MS LOCATOR_JSON
-vacu inspect-wait domcontentloaded|load TIMEOUT_MS
-vacu title | url | tab-info | assets | inspect-page | layout-metrics
-vacu session-start NAME | session-list
-vacu --session ID open URL | tabs | use TAB_ID | session-status | session-end
-vacu --session ID COMMAND ...  Target a named session; select its tab before page commands
-vacu session-start | session-status | session-handoff | session-restore | session-audit
-vacu session-result ok|failed|cancelled | session-end
-TARGET is @rN or X Y; use - for no mouse modifiers. New interactions use synthetic events; inspection is main-document only.`;
+const usage = `vabu setup [OPTIONS]           Set up the local browser extension and bridge
+vabu status | tabs | use TAB_ID | release
+vabu [--session ID] feedback   Read and clear submitted page comments
+vabu open URL                  Open a background tab; run use TAB_ID before wait or snapshot
+vabu snapshot                  Page text and control references
+vabu --pretty COMMAND ...      Indent JSON for human readers (default: compact)
+vabu [--pretty|--compact] [--socket NAME] [--session ID] COMMAND ...
+                               Select a local Unix socket (default: chrome-default)
+vabu [--session ID] snapshot --brief  Short page preview with clickable refs
+vabu [--session ID] snapshot --find TEXT   Find controls by name; keep clickable refs
+vabu [--session ID] snapshot --regex PATTERN   Match control names with a case-insensitive regex
+vabu [--session ID] snapshot --role ROLE [--find TEXT | --regex PATTERN]
+vabu snapshot --within SELECTOR [--role ROLE]
+vabu find role ROLE --name NAME click
+vabu wait --url URL | --text TEXT [--timeout MS]
+vabu get text|href @rN
+vabu frame-list | frame-read FRAME_ID  Guarded direct iframe text in VABU-opened tabs
+vabu frames                     List verified direct same-origin iframe ID/document pairs
+vabu inspect-query [--brief] --frame ID DOCUMENT_ID LOCATOR_JSON
+vabu inspect-element --frame ID DOCUMENT_ID LOCATOR_JSON
+vabu inspect-wait --frame ID DOCUMENT_ID EVENT TIMEOUT_MS [LOCATOR_JSON]
+vabu inspect-click --frame ID DOCUMENT_ID @iREF
+vabu [--session ID] inspect-query --brief LOCATOR_JSON  Short match list
+vabu click @rN | click X Y     Click a fresh control or viewport point
+vabu move X Y | hover @rN      Move the virtual cursor to a point or control
+vabu type TEXT                 Insert text into the focused text field
+vabu scroll DY [@rN]           Wheel-scroll over the cursor or a control
+vabu [--session ID] screenshot [NEW_FILE.png|jpg] [--if-changed | --threshold 0-1]
+    --screenshot-dir DIR | --screenshot-format png|jpeg | --screenshot-quality 0-100
+    Owned tab viewport, including visible iframe pixels (Firefox requires popup opt-in)
+vabu [--session ID] inspect-dialog show | accept ID | dismiss ID  Owned Chrome tabs only
+vabu cursor-move TARGET | mouse-click BUTTON MODIFIERS TARGET | double-click TARGET
+vabu drag X1 Y1 X2 Y2 | wheel DX DY [TARGET] | keypress CHORD
+vabu insert-text TEXT | fill @rN TEXT | select-option @rN VALUE | set-checked @rN true|false
+vabu inspect-query LOCATOR_JSON | inspect-element LOCATOR_JSON
+vabu inspect-wait visible|hidden TIMEOUT_MS LOCATOR_JSON
+vabu inspect-wait domcontentloaded|load TIMEOUT_MS
+vabu title | url | tab-info | assets | inspect-page | layout-metrics
+vabu session-start NAME | session-list
+vabu --session ID open URL | tabs | use TAB_ID | session-status | session-end
+vabu --session ID COMMAND ...  Target a named session; select its tab before page commands
+vabu session-start | session-status | session-handoff | session-restore | session-audit
+vabu session-result ok|failed|cancelled | session-end
+TARGET is @rN or X Y; use - for no mouse modifiers. Frame operations in Firefox require 153+.`;
 
 async function request(args) {
   const line = JSON.stringify(args) + '\n';
   if (Buffer.byteLength(line) > requestLimit) throw new Error('Command too large');
-  privateDirectory();
-  const client = createConnection(socketPath);
+  const path = socketPath(socketName ?? defaultSocketNames.chrome);
+  privateSocketDirectory();
+  const client = createConnection(path);
   client.setTimeout(19_000, () => client.destroy(new Error('Command timed out')));
   client.on('connect', () => client.write(line));
   const chunks = [];
@@ -78,8 +79,8 @@ async function request(args) {
 }
 
 const args = process.argv.slice(2);
-const pretty = args[0] === '--pretty';
-if (pretty || args[0] === '--compact') args.shift();
+let pretty;
+let socketName;
 
 function brief(value, verb) {
   if (verb === 'snapshot') {
@@ -110,36 +111,44 @@ function filterControls({ title, controls }, { role, term = '', regex }) {
 }
 
 try {
+  while (['--socket', '--pretty', '--compact'].includes(args[0])) {
+    const flag = args.shift();
+    if (flag === '--socket') {
+      if (socketName !== undefined) throw new Error('Supply --socket only once');
+      socketName = args.shift();
+      socketPath(socketName); // Validate even when no command is supplied.
+    } else {
+      if (pretty !== undefined) throw new Error('Supply only one of --pretty or --compact');
+      pretty = flag === '--pretty';
+    }
+  }
+  const index = args[0] === '--session' ? 2 : 0;
+  const verb = args[index];
   if (!args.length || ['help', '--help', '-h'].includes(args[0])) {
     console.log(usage);
+  } else if (args[0].startsWith('-') && args[0] !== '--session') {
+    throw new Error(`Unknown option: ${args[0]}`);
   } else if (args[0] === 'setup') {
-    if (args.length === 1) {
-      console.log(fileURLToPath(new URL('./extension', import.meta.url)));
-    } else {
-      if (args.length !== 2) throw new Error('Usage: vacu setup CHROME_EXTENSION_ID | --firefox');
-      const { registerHost } = await import('./install.mjs');
-      console.log('Registered ' + registerHost(args[1]));
-    }
-  } else if (args[args[0] === '--session' ? 2 : 0] === 'screenshot') {
-    const index = args[0] === '--session' ? 2 : 0;
+    const { setup } = await import('./install.mjs');
+    console.log(await setup(args.slice(1)));
+  } else if (verb === 'screenshot') {
     const { path, dir, options } = parseScreenshotArgs(args.slice(index + 1), process.env);
-    const { data, ...value } = await request([...args.slice(0, index + 1), JSON.stringify(options)]);
-    if (value.unchanged) {
-      console.log(JSON.stringify(value, null, pretty ? 2 : 0));
-    } else {
+    const { data, format, ...value } = await request([...args.slice(0, index + 1), JSON.stringify(options)]);
+    if (format !== options.format) throw new Error('Browser returned an unexpected screenshot format');
+    if (!value.unchanged) {
       const image = Buffer.from(data ?? '', 'base64');
-      const png = image.subarray(0, 4).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47]));
-      const jpeg = image[0] === 0xff && image[1] === 0xd8;
-      if (!(options.format === 'png' ? png : jpeg)) throw new Error(`Chrome did not return a ${options.format.toUpperCase()} image`);
-      const file = resolve(path ?? join(dir ?? join(tmpdir(), 'vacu-screenshots'),
-        screenshotFileName(options.format, new Date(), randomBytes(3).toString('hex'))));
-      await mkdir(dirname(file), { recursive: true, mode: 0o700 });
-      await writeFile(file, image, { mode: 0o600 });
-      console.log(JSON.stringify({ path: file, ...value }, null, pretty ? 2 : 0));
+      const valid = format === 'png'
+        ? image.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))
+        : image.subarray(0, 3).equals(Buffer.from([255, 216, 255]));
+      if (!valid) throw new Error(`Browser did not return a ${format.toUpperCase()} image`);
+      const file = resolve(path ?? join(dir ?? join(tmpdir(), 'vabu-screenshots'),
+        screenshotFileName(format, new Date(), randomBytes(3).toString('hex'))));
+      if (!path) await mkdir(dirname(file), { recursive: true, mode: 0o700 });
+      await writeFile(file, image, { flag: 'wx', mode: 0o600 });
+      value.path = file;
     }
+    console.log(JSON.stringify({ ...value, format }, null, pretty ? 2 : 0));
   } else {
-    const index = args[0] === '--session' ? 2 : 0;
-    const verb = args[index];
     if (verb === 'snapshot' && args[index + 1] === '--within') args[index] = 'scoped-snapshot';
     const short = ['snapshot', 'inspect-query'].includes(verb) && args[index + 1] === '--brief';
     let filters;
@@ -168,7 +177,7 @@ try {
   }
 } catch (error) {
   if (error.code === 'ENOENT' || error.code === 'ECONNREFUSED') {
-    console.error('Missing file or inactive bridge. Open the VACU extension and start the local bridge.');
+    console.error(`Bridge not reachable on ${socketName ?? defaultSocketNames.chrome}. Open the VABU popup, check its socket name, and start the local bridge.`);
   } else {
     console.error(error.message);
   }

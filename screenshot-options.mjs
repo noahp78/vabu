@@ -1,22 +1,21 @@
 const imageExtension = /\.(png|jpe?g)$/i;
 
-// Parses agent-browser compatible screenshot flags: [SELECTOR] [PATH] plus options, in any order.
+// Parse the supported agent-browser viewport flags before contacting the bridge.
 export function parseScreenshotArgs(argv, env = {}) {
   const positional = [];
-  const options = { full: false, annotate: false, ifChanged: false, threshold: 0 };
-  let dir = env.VACU_SCREENSHOT_DIR || null;
+  const options = { ifChanged: false, threshold: 0 };
+  let dir = env.VABU_SCREENSHOT_DIR || env.VACU_SCREENSHOT_DIR || null;
   let format = null;
-  let quality = env.VACU_SCREENSHOT_QUALITY ?? null;
+  let quality = env.VABU_SCREENSHOT_QUALITY ?? env.VACU_SCREENSHOT_QUALITY ?? null;
   const value = (i, flag) => {
-    if (argv[i + 1] === undefined) throw new Error(`${flag} needs a value`);
+    if (!argv[i + 1] || argv[i + 1].startsWith('--')) throw new Error(`${flag} needs a value`);
     return argv[i + 1];
   };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
-    if (arg === '--full' || arg === '-f') options.full = true;
-    else if (arg === '--annotate') options.annotate = true;
-    else if (arg === '--if-changed') options.ifChanged = true;
-    else if (arg === '--json') {} // VACU always prints JSON; accepted for agent-browser compatibility.
+    if (['--full', '-f', '--annotate'].includes(arg)) throw new Error('VABU screenshots support only the unannotated viewport');
+    if (arg === '--if-changed') options.ifChanged = true;
+    else if (arg === '--json') {} // Accepted for agent-browser compatibility.
     else if (arg === '--threshold') {
       const raw = value(i++, arg);
       const threshold = Number(raw);
@@ -28,13 +27,12 @@ export function parseScreenshotArgs(argv, env = {}) {
     else if (arg.startsWith('-')) throw new Error(`Unknown screenshot option ${arg}`);
     else positional.push(arg);
   }
-  if (positional.length > 2) throw new Error('Usage: screenshot [SELECTOR] [PATH] [options]');
-  let [selector = null, path = null] = positional;
-  if (positional.length === 1 && imageExtension.test(selector)) [selector, path] = [null, selector];
-  if (path !== null && !imageExtension.test(path)) throw new Error('Screenshot PATH must end in .png, .jpg or .jpeg');
+  if (positional.length > 1) throw new Error('VABU screenshots do not accept element selectors');
+  const [path = null] = positional;
+  if (path !== null && !imageExtension.test(path)) throw new Error('Supply a .png, .jpg or .jpeg path (element selectors are unsupported)');
 
   const fromPath = path && (/\.png$/i.test(path) ? 'png' : 'jpeg');
-  format = (format ?? fromPath ?? env.VACU_SCREENSHOT_FORMAT ?? 'png').toLowerCase();
+  format = (format ?? fromPath ?? env.VABU_SCREENSHOT_FORMAT ?? env.VACU_SCREENSHOT_FORMAT ?? 'png').toLowerCase();
   if (format === 'jpg') format = 'jpeg';
   if (!['png', 'jpeg'].includes(format)) throw new Error('--screenshot-format must be png or jpeg');
   if (fromPath && fromPath !== format) throw new Error(`PATH extension does not match format ${format}`);
@@ -44,7 +42,7 @@ export function parseScreenshotArgs(argv, env = {}) {
   } else quality = null;
   return {
     path, dir,
-    options: { ...options, selector, format, ...(format === 'jpeg' && quality !== null ? { quality } : {}) },
+    options: { ...options, format, ...(format === 'jpeg' && quality !== null ? { quality } : {}) },
   };
 }
 
