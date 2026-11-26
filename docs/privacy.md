@@ -4,7 +4,7 @@ VABU is a browser extension and a separate local command-line tool. The develope
 
 ## What the extension shares
 
-While the bridge is running, VABU passes the information needed to answer commands to the local CLI through Native Messaging and a private Unix socket. Depending on the command, that can include accessible tab URLs and titles, visible text and controls from a selected page, results of clicks or typing, selected viewport images, and feedback notes you submit. Some URLs include query strings and viewport images can show sensitive or cross-origin content. Avoid granting access to sites or opening pages you do not want to share with the CLI.
+While the bridge is running, VABU passes the information needed to answer commands to the local CLI through Native Messaging and a private Unix socket. Depending on the command, that can include accessible tab URLs and titles, visible text and controls from a selected page, results of clicks or typing, selected viewport images, feedback notes you submit, and (on Chrome) console output or navigation timing you explicitly request. Some URLs include query strings and viewport images can show sensitive or cross-origin content. Avoid granting access to sites or opening pages you do not want to share with the CLI.
 
 The site you visit still receives your normal browsing activity, including actions taken there on your behalf. If a separate tool or agent reads VABU output, that tool may handle or forward it under its own policies. VABU does not control that tool.
 

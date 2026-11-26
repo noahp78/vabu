@@ -330,6 +330,7 @@ chrome.debugger.onDetach.addListener(({ tabId }) => {
 chrome.debugger.onEvent.addListener(({ tabId, sessionId }, method, params) => {
   const s = session;
   if (!s || s.id !== tabId || sessionId !== undefined) return;
+  recordConsole(s, method, params);
   const dialog = s.dialogScope?.dialog;
   if (method === 'Page.javascriptDialogOpening') {
     s.modalOpen = true;
@@ -838,6 +839,94 @@ function ownedDocumentScope(connection, s) {
   return { parent, assertCurrent, verify };
 }
 
+function recordConsole(s, method, params) {
+  const capture = s.consoleCapture;
+  if (!capture) return;
+  if (method === 'Runtime.executionContextCreated') {
+    const { id, origin, auxData } = params.context;
+    if (auxData?.isDefault && auxData.frameId === capture.frameId && origin === s.origin) capture.context = id;
+    return;
+  }
+  if (method === 'Runtime.executionContextsCleared'
+    || (method === 'Runtime.executionContextDestroyed' && params.executionContextId === capture.context)) {
+    capture.context = undefined;
+    return;
+  }
+  if (capture.context === undefined) return;
+  let entry;
+  if (method === 'Runtime.consoleAPICalled' && params.executionContextId === capture.context) {
+    entry = { level: params.type, text: params.args.slice(0, 8)
+      .map(arg => String(arg.value ?? arg.unserializableValue ?? arg.description ?? arg.type).slice(0, 256)).join(' ') };
+  } else if (method === 'Runtime.exceptionThrown' && params.exceptionDetails.executionContextId === capture.context) {
+    const { exceptionDetails: error } = params;
+    entry = { level: 'error', text: (error.exception?.description ?? error.text).slice(0, 2048), line: error.lineNumber + 1 };
+  }
+  if (!entry) return;
+  if (capture.entries.length === 100) { capture.entries.shift(); capture.dropped++; }
+  capture.entries.push(entry);
+}
+
+async function runDebug(connection, verb, args, setBeforeReply) {
+  const [action] = args;
+  if (args.length !== 1 || !(verb === 'console' ? ['start', 'reload', 'read', 'stop'].includes(action) : action === 'timing')) {
+    throw new Error(verb === 'console' ? 'Usage: vabu console start | reload | read | stop' : 'Usage: vabu js timing');
+  }
+  const s = requireOwnedSelection(connection);
+  const scope = ownedDocumentScope(connection, s);
+  scope.parent.url = (await chrome.tabs.get(s.id)).url;
+  await scope.verify();
+  if (verb === 'js') {
+    const [result] = await chrome.scripting.executeScript({ target: { tabId: s.id, documentIds: [scope.parent.documentId] },
+      world: 'ISOLATED', args: [scope.parent.url], func: function navigationTiming(href) {
+        if (window !== window.top || location.href !== href) return null;
+        const nav = performance.getEntriesByType('navigation')[0];
+        return nav ? { type: nav.type, responseStart: nav.responseStart, domInteractive: nav.domInteractive,
+          domContentLoaded: nav.domContentLoadedEventEnd, load: nav.loadEventEnd } : null;
+      } });
+    if (result?.documentId !== scope.parent.documentId || result.frameId !== 0 || !result.result) {
+      throw new Error('Navigation timing unavailable for this document');
+    }
+    setBeforeReply(scope.verify, scope.assertCurrent);
+    return result.result;
+  }
+  if (action === 'stop') {
+    if (s.consoleCapture) {
+      delete s.consoleCapture;
+      await cdp(s, 'Runtime.disable');
+    }
+    return { recording: false };
+  }
+  if (action === 'read') {
+    if (!s.consoleCapture) throw new Error('Start console recording first');
+    setBeforeReply(scope.verify, scope.assertCurrent);
+    const { entries, dropped } = s.consoleCapture;
+    return { entries: entries.slice(), dropped };
+  }
+  if (!s.consoleCapture) {
+    const tree = await cdp(s, 'Page.getFrameTree');
+    const frame = tree?.frameTree?.frame;
+    if (!frame?.id || frame.url !== scope.parent.url) throw new Error('Cannot verify the root frame for console recording');
+    await scope.verify();
+    s.consoleCapture = { frameId: frame.id, entries: [], dropped: 0 };
+    try {
+      await cdp(s, 'Runtime.enable');
+      await scope.verify();
+    } catch (error) {
+      delete s.consoleCapture;
+      if (session === s) await cdp(s, 'Runtime.disable').catch(() => {});
+      throw error;
+    }
+  }
+  if (action === 'reload') {
+    s.consoleCapture.entries.length = 0;
+    s.consoleCapture.dropped = 0;
+    s.consoleCapture.context = undefined;
+    scope.assertCurrent();
+    await cdp(s, 'Page.reload');
+  }
+  return { recording: true };
+}
+
 async function runCapture(connection, args, setBeforeReply) {
   const options = captureOptions(args);
   const s = requireOwnedSelection(connection);
@@ -1110,6 +1199,7 @@ async function command(connection, args, setBeforeReply) {
   if (verb === 'frame-list' || verb === 'frame-read' || isFrameInspection(verb, args.slice(1))) {
     return runFrameCommand(connection, verb, args.slice(1), setBeforeReply);
   }
+  if (verb === 'console' || verb === 'js') return runDebug(connection, verb, args.slice(1), setBeforeReply);
   if (verb === 'screenshot') return runCapture(connection, args.slice(1), setBeforeReply);
   if (verb === 'inspect-dialog') return runDialog(connection, args.slice(1), setBeforeReply);
   if (verb === 'title' || Object.hasOwn(adapterCommands, verb)) return runAdapter(connection, verb, args.slice(1));
