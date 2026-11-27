@@ -8,6 +8,9 @@ body { margin: 0; width: 360px; }
 main { padding: 14px; }
 .header { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
 .header img { border-radius: 12px; }
+#settings-toggle { margin-inline-start: auto; }
+#home-view, #settings-view { display: grid; gap: 8px; }
+#home-view > .card, #settings-view > .card { margin: 0; }
 h1, h2, p { margin: 0; }
 h1 { font-size: 22px; line-height: 1.2; letter-spacing: -.03em; }
 h2 { font-size: 15px; line-height: 1.3; }
@@ -18,6 +21,10 @@ h2 { font-size: 15px; line-height: 1.3; }
 .heading-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
 .badge { border-radius: 999px; padding: 3px 9px; font-size: 11px; font-weight: 700; background: #ece8f2; color: #554c64; }
 .badge[data-state="online"] { background: #d9f7e7; color: #075b36; }
+#bridge-socket { appearance: none; align-items: center; justify-content: center; display: inline-flex;
+  border-color: transparent; min-inline-size: 0; min-block-size: 24px; line-height: 1.25;
+  text-align: center; overflow-wrap: anywhere; }
+#bridge-socket:hover:not(:disabled) { border-color: currentColor; }
 .badge[data-state="error"] { background: #ffe3e3; color: #942d2d; }
 button, input { font: inherit; border-radius: 8px; border: 1px solid #bcb3cd; padding: 6px 12px; }
 button { cursor: pointer; color: inherit; background: #fff; font-weight: 650; }
@@ -26,16 +33,17 @@ button:disabled { opacity: .6; cursor: not-allowed; }
 button:focus-visible, input:focus-visible { outline: 3px solid #9b7aef; outline-offset: 2px; }
 .primary { background: #5b21b6; border-color: #5b21b6; color: white; }
 .primary:hover:not(:disabled) { background: #4c1d95; }
-#bridge { width: 100%; margin-top: 8px; }
+#feedback, #bridge { width: 100%; margin-top: 8px; }
+#feedback-status:empty { margin: 0; }
 #screenshot-permission { margin-top: 8px; }
 .actions, .socket-row { display: flex; gap: 8px; margin-top: 6px; }
 .actions button { flex: 1; }
 label { display: block; font-weight: 700; margin-top: 10px; }
 .optional, .hint { font-size: 12px; font-weight: 400; }
-.socket-row input { min-width: 0; width: 100%; background: transparent; color: inherit; }
+.socket-row input { min-width: 0; width: 100%; background-color: transparent; color: inherit; }
 #approval-target { overflow-wrap: anywhere; font-weight: 700; }
 .copy-value { display: block; width: 100%; margin-top: 4px; padding: 4px 8px; text-align: left; overflow-wrap: anywhere; }
-#copy-status:empty { margin: 0; }
+#copy-status:empty, #bridge-copy-status:empty { margin: 0; }
 #approval-status:not(:empty), #socket-status:not(:empty) { margin: 8px 0; }
 [hidden] { display: none !important; }
 @media (prefers-color-scheme: dark) {

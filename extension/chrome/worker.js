@@ -502,7 +502,7 @@ function inPage(origin, key, markTitle, operation, arg, y, animate = true, findT
     const markTab = () => {
       if (document.title === markedTitle) return;
       originalTitle = document.title;
-      document.title = originalTitle ? '🟣 VABU actief · ' + originalTitle : '🟣 VABU actief';
+      document.title = originalTitle ? '🟣 ' + originalTitle : '🟣';
       markedTitle = document.title;
     };
     const observer = new MutationObserver(markTab);

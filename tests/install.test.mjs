@@ -121,8 +121,9 @@ test('release downloads install offline and stage Chrome without changing any in
 
     // A changed package stages at a new path; tampering with a cached stage never overwrites it.
     const source = join(prefix, 'lib/node_modules/@noahp78/vabu/extension/chrome/manifest.json');
-    const modified = manifest.replace('Virtual Agentic Browser User', 'New Browser Build');
-    assert.notEqual(modified, manifest);
+    const contents = JSON.parse(manifest);
+    assert.equal(contents.name, 'VABU');
+    const modified = JSON.stringify({ ...contents, description: 'New Browser Build' });
     await writeFile(source, modified);
     const updated = (await vabu('setup')).stdout.trim();
     assert.notEqual(updated, folder);

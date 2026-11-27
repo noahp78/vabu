@@ -43,6 +43,7 @@ for (const browser of ['chrome', 'firefox']) {
 
     const firefox = browser === 'firefox';
     const manifest = JSON.parse(staged.get('manifest.json'));
+    assert.equal(manifest.name, 'VABU');
     const visited = new Set(['manifest.json']);
     function visit(path) {
       assert.match(path, new RegExp(`^(shared|${browser})/`));

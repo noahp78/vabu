@@ -25,7 +25,7 @@ async function until(check) {
   assert.fail('Timed out waiting for Chromium fixture');
 }
 
-test('isolated Chromium: native CLI captures a background tab and explicitly handles observed dialogs', {
+test('isolated Chromium: owned capture, dialogs and tab title marker', {
   skip: !chromium || process.platform !== 'linux', timeout: 30000,
 }, async (t) => {
   const dir = await mkdtemp(join(tmpdir(), 'vabu-chrome-'));
@@ -38,13 +38,20 @@ test('isolated Chromium: native CLI captures a background tab and explicitly han
   let polling = false;
   let result;
   const orders = [];
+  const titles = [];
   const server = createServer((req, res) => {
     if (req.url === '/next') { polling = true; res.end(next); next = ''; }
     else if (req.url.startsWith('/result/')) { result = req.url; res.end(); }
     else if (req.url.startsWith('/order/')) { orders.push(req.url.slice('/order/'.length)); res.end(); }
+    else if (req.url.startsWith('/title?')) {
+      titles.push(new URL(req.url, 'http://127.0.0.1').searchParams.get('value'));
+      res.end();
+    }
     else {
       res.setHeader('Content-Type', 'text/html');
       res.end(`<!doctype html><title>Owned fixture</title><body>Fixture<script>
+        new MutationObserver(() => fetch('/title?value=' + encodeURIComponent(document.title)))
+          .observe(document.querySelector('title'), { childList: true, subtree: true, characterData: true });
         (async () => { for (;;) {
           const action = await fetch('/next', { cache: 'no-store' }).then(r => r.text());
           if (action === 'alert') { alert('private alert'); await fetch('/result/true'); }
@@ -103,6 +110,9 @@ test('isolated Chromium: native CLI captures a background tab and explicitly han
     assert.equal(active, false);
     await until(() => polling);
     await scoped('use', String(tab));
+    await until(() => titles.length);
+    assert.equal(titles[0], '🟣 Owned fixture');
+    assert.equal(await scoped('title'), 'Owned fixture');
     const jpeg = join(dir, 'viewport.jpg');
     assert.deepEqual(await scoped('screenshot', jpeg), { path: jpeg, format: 'jpeg' });
     assert.deepEqual((await readFile(jpeg)).subarray(0, 3), Buffer.from([255, 216, 255]));

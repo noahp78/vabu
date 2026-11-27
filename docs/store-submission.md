@@ -2,7 +2,7 @@
 
 ## Listing
 
-**Name:** VABU — Virtual Agentic Browser User
+**Name:** VABU
 
 **Short description:** Control selected browser tabs from a local command-line tool.
 

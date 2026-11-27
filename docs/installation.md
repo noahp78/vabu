@@ -48,7 +48,7 @@ When building from source at an already loaded path, close the browser, move the
 
 ## Use more than one browser or profile
 
-The popup shows the active socket name and CLI command. Chrome defaults to `chrome-default`; Firefox defaults to `firefox-default`. If you use more than one profile of the same browser, choose distinct names. Stop the bridge in that profile, edit and save the name, then restart. Clear the field to restore the default. Names are 1–32 lowercase ASCII letters, digits or hyphens, starting with a letter and ending with a letter or digit.
+When the bridge is online, its green badge in the VABU popup shows the active socket name. Click the badge to copy the name. Open **Settings** to see and copy the CLI command. Chrome defaults to `chrome-default`; Firefox defaults to `firefox-default`. If you use more than one profile of the same browser, choose distinct names. Stop the bridge on the main popup view, edit and save the name in **Settings**, then go back and start the bridge. Clear the field to restore the default. Names are 1–32 lowercase ASCII letters, digits or hyphens, starting with a letter and ending with a letter or digit.
 
 ```sh
 vabu status                                  # default Chrome socket

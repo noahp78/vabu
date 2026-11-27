@@ -12,7 +12,7 @@ The destination must not exist. The **root of the staged extension** is `dist/fi
 | Staged path | Source |
 | --- | --- |
 | `manifest.json` | `extension/firefox/manifest.json` (copied verbatim) |
-| `shared/` | Shared runtime modules, popup and PNG icons from `extension/shared/` |
+| `shared/` | Runtime modules, popup, SVG logo and PNG toolbar icons from `extension/shared/` |
 | `firefox/background.mjs`, `firefox/frame-read.mjs` | Same names from `extension/firefox/` |
 | `firefox/content.js` | Generated classic isolated-world script: `install` from `content.mjs` plus the shared in-page interaction, inspection, scoped snapshot, text wait, and element read functions; no runtime eval or web-accessible module |
 
@@ -20,7 +20,7 @@ Use the staged root's `manifest.json` when temporarily loading the unpacked add-
 
 ## Native transport contract
 
-The fixed add-on ID is `vabu@local.invalid` and the host name is `local.vabu`. The Firefox host registration must use `type: "stdio"` and `allowed_extensions: ["vabu@local.invalid"]`, **not** Chrome's `allowed_origins`. Run `node install.mjs --firefox` from the checkout to register it in `~/.mozilla/native-messaging-hosts/` on Linux or `~/Library/Application Support/Mozilla/NativeMessagingHosts/` on macOS. The installer prints the manifest path. See [installation](installation.md) for launcher and runtime paths and keeping the browser and CLI environments in sync. The native host and CLI share the same private Unix socket scheme across browsers. Firefox defaults to `firefox-default`, so use `vabu --socket firefox-default status`. To run more than one Firefox profile, stop the bridge and save a distinct socket name per profile (for example, `firefox-adwise`). The popup shows the effective name and CLI command. See the [installation guide](installation.md#use-more-than-one-browser-or-profile) for reconnect and collision guidance. Firefox uses the shared popup to explicitly start and stop the bridge; it does not inherit Chrome's auto-start policy. The green dot appears after the host's readiness response. Do not register a host against a regular profile/HOME for staging validation.
+The fixed add-on ID is `vabu@local.invalid` and the host name is `local.vabu`. The Firefox host registration must use `type: "stdio"` and `allowed_extensions: ["vabu@local.invalid"]`, **not** Chrome's `allowed_origins`. Run `node install.mjs --firefox` from the checkout to register it in `~/.mozilla/native-messaging-hosts/` on Linux or `~/Library/Application Support/Mozilla/NativeMessagingHosts/` on macOS. The installer prints the manifest path. See [installation](installation.md) for launcher and runtime paths and keeping the browser and CLI environments in sync. The native host and CLI share the same private Unix socket scheme across browsers. Firefox defaults to `firefox-default`, so use `vabu --socket firefox-default status`. To run more than one Firefox profile, stop the bridge and save a distinct socket name per profile (for example, `firefox-adwise`). The popup’s **Settings** view shows the effective name and CLI command. See the [installation guide](installation.md#use-more-than-one-browser-or-profile) for reconnect and collision guidance. Firefox uses the shared popup to explicitly start and stop the bridge; it does not inherit Chrome's auto-start policy. The green dot appears after the host's readiness response. Do not register a host against a regular profile/HOME for staging validation.
 
 ## Capability matrix
 
@@ -54,7 +54,7 @@ IDs are opaque, not browser frame IDs or URLs. A new list, selection change, nav
 
 ## Viewport screenshots
 
-In the Firefox VABU popup click **Enable screenshots**. The popup closes so you can approve Firefox's prompt. The optional `<all_urls>` grant expands origin access for the entire add-on, including eligible non-HTTP(S) schemes, not just one capture or tab. The existing HTTP(S) grants do not unlock Firefox's capture API. Click **Revoke screenshot access** in the VABU popup to remove the grant; stopping the bridge does not remove it. Neither opening the popup nor running any CLI command prompts for this grant.
+In the Firefox VABU popup, open **Settings** and click **Enable screenshots**. The popup closes so you can approve Firefox's prompt. The optional `<all_urls>` grant expands origin access for the entire add-on, including eligible non-HTTP(S) schemes, not just one capture or tab. The existing HTTP(S) grants do not unlock Firefox's capture API. Click **Revoke screenshot access** in the same settings view to remove the grant; stopping the bridge does not remove it. Neither opening the popup nor running any CLI command prompts for this grant.
 
 After `open URL` and `use TAB_ID` on the loaded tab, run `vabu --socket firefox-default screenshot NEW_FILE.jpg`. Use the same `--session ID` for all three commands if in a named workspace. The CLI writes a new private PNG or JPEG and refuses to overwrite existing files. The viewport includes visible cross-origin iframe pixels; this does not authorize iframe DOM reads. Do not capture or share sensitive views.
 

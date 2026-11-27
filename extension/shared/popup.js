@@ -1,9 +1,22 @@
 import { defaultSocketNames, socketNameError, validSocketName } from './socket-name.mjs';
 
 const runtime = (globalThis.browser ?? globalThis.chrome).runtime;
+const homeView = document.querySelector('#home-view');
+const settingsView = document.querySelector('#settings-view');
+const settingsToggle = document.querySelector('#settings-toggle');
+
+settingsToggle.addEventListener('click', () => {
+  const showSettings = settingsView.hidden;
+  homeView.hidden = showSettings;
+  settingsView.hidden = !showSettings;
+  settingsToggle.textContent = showSettings ? 'Back' : 'Settings';
+  settingsToggle.setAttribute('aria-expanded', String(showSettings));
+});
 const status = document.querySelector('#status');
 const bridge = document.querySelector('#bridge');
 const bridgeState = document.querySelector('#bridge-state');
+const bridgeSocket = document.querySelector('#bridge-socket');
+const bridgeCopyStatus = document.querySelector('#bridge-copy-status');
 const effectiveSocket = document.querySelector('#effective-socket');
 const cliHint = document.querySelector('#cli-hint');
 const cliCommand = document.querySelector('#cli-command');
@@ -33,6 +46,7 @@ async function send(message) {
 function controls() {
   bridge.disabled = busy || !current;
   feedback.disabled = busy || feedbackBusy || !current?.connected;
+  bridgeSocket.disabled = busy || bridgeSocket.hidden;
   copySocket.disabled = copyCli.disabled = busy || !current;
   socketInput.disabled = socketSave.disabled = busy || !current || current.connected || current.starting;
 }
@@ -73,7 +87,7 @@ async function update(message) {
     const error = bridgeError || bridgeActionError;
     bridge.textContent = connected || starting ? 'Stop local bridge' : 'Start local bridge';
     status.textContent = error || (connected ? 'Bridge is running.' : starting ? 'Bridge is starting…' : 'Bridge is stopped.');
-    setBadge(error ? 'error' : connected ? 'online' : 'offline');
+    setBadge(error ? 'error' : connected ? 'online' : 'offline', socketName);
   } catch (error) {
     if (request !== revision) return;
     current = undefined;
@@ -90,20 +104,29 @@ async function update(message) {
   }
 }
 
-function setBadge(state) {
-  if (!bridgeState) return;
+function setBadge(state, socketName) {
+  const online = state === 'online';
+  if (!online || bridgeSocket.textContent !== socketName) bridgeCopyStatus.textContent = '';
   bridgeState.dataset.state = state;
-  bridgeState.textContent = { online: 'Online', offline: 'Offline', error: 'Error' }[state];
+  bridgeState.hidden = online;
+  bridgeState.textContent = online ? '' : state === 'error' ? 'Error' : 'Offline';
+  bridgeSocket.hidden = !online;
+  bridgeSocket.textContent = online ? socketName : '';
+  bridgeSocket.setAttribute('aria-label', online ? `Bridge online. Copy socket name: ${socketName}` : '');
 }
 
-for (const [button, value, label] of [[copySocket, effectiveSocket, 'Socket name'], [copyCli, cliCommand, 'CLI command']]) {
+for (const [button, value, label, resultStatus, confirmation = ''] of [
+  [bridgeSocket, effectiveSocket, 'Socket name', bridgeCopyStatus],
+  [copySocket, effectiveSocket, 'Socket name', copyStatus],
+  [copyCli, cliCommand, 'CLI command', copyStatus, 'CLI command copied.'],
+]) {
   button.addEventListener('click', async () => {
     if (button.disabled) return;
     try {
       await navigator.clipboard.writeText(value.textContent);
-      copyStatus.textContent = `${label} copied.`;
+      resultStatus.textContent = confirmation;
     } catch {
-      copyStatus.textContent = `Could not copy ${label.toLowerCase()}.`;
+      resultStatus.textContent = `Could not copy ${label.toLowerCase()}.`;
     }
   });
 }

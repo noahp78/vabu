@@ -10,9 +10,13 @@ const source = (await readFile(new URL('../extension/shared/popup.js', import.me
 
 function popup(browser) {
   const elements = new Map();
+  const element = () => ({ value: '', textContent: '', hidden: true, dataset: {}, attributes: {}, children: [],
+    append(...nodes) { this.children.push(...nodes); },
+    replaceChildren(...nodes) { this.children = nodes; },
+    addEventListener(type, listener) { this[type] = listener; },
+    setAttribute(name, value) { this.attributes[name] = value; } });
   const select = (id) => {
-    if (!elements.has(id)) elements.set(id, { value: '', textContent: '', hidden: true, dataset: {},
-      addEventListener(type, listener) { this[type] = listener; } });
+    if (!elements.has(id)) elements.set(id, { ...element(), hidden: id !== '#home-view' });
     return elements.get(id);
   };
   const state = { browser, connected: false, starting: false, socketName: `${browser}-default`, socketOverride: null };
@@ -54,18 +58,76 @@ function popup(browser) {
   runInNewContext(source, { defaultSocketNames, socketNameError, validSocketName, [browser === 'firefox' ? 'browser' : 'chrome']: { runtime, permissions },
     window: { close() { permissionActions.push(['close']); } },
     navigator: { clipboard: { async writeText(text) { copied.push(text); } } },
-    document: { querySelector: select }, setTimeout(fn) { fixture.poll = fn; }, clearTimeout() {} });
+    document: { querySelector: select, createElement: element }, setTimeout(fn) { fixture.poll = fn; }, clearTimeout() {} });
   return fixture;
 }
+
+test('popup opens on feedback and keeps settings behind a reversible view', async () => {
+  const { select, actions, channel } = popup('chrome');
+  await setImmediate();
+  const toggle = select('#settings-toggle');
+  assert.equal(select('#home-view').hidden, false);
+  assert.equal(select('#settings-view').hidden, true);
+  toggle.click();
+  assert.equal(select('#home-view').hidden, true);
+  assert.equal(select('#settings-view').hidden, false);
+  assert.equal(toggle.textContent, 'Back');
+  assert.equal(toggle.attributes['aria-expanded'], 'true');
+  channel.onMessage.fire({ state: 'pending', request: { tab: 7, origin: 'https://example.test', token: 'test' } });
+  assert.equal(select('#approval').hidden, false);
+  toggle.click();
+  assert.equal(select('#home-view').hidden, false);
+  assert.equal(select('#settings-view').hidden, true);
+  assert.equal(toggle.textContent, 'Settings');
+  assert.equal(toggle.attributes['aria-expanded'], 'false');
+  assert.deepEqual(actions, [{ action: 'status' }]);
+});
 
 test('popup copies the displayed socket and CLI command', async () => {
   const { select, copied } = popup('firefox');
   await setImmediate();
   await select('#copy-socket').click();
-  assert.equal(select('#copy-status').textContent, 'Socket name copied.');
+  assert.equal(select('#copy-status').textContent, '');
   await select('#copy-cli').click();
   assert.equal(select('#copy-status').textContent, 'CLI command copied.');
   assert.deepEqual(copied, ['firefox-default', 'vabu --socket firefox-default status']);
+});
+
+test('online bridge badge copies the exact effective socket; offline and error badges cannot copy', async () => {
+  for (const browser of ['chrome', 'firefox']) {
+    const fixture = popup(browser);
+    const { select, state, copied } = fixture;
+    const badge = select('#bridge-socket');
+    const offline = select('#bridge-state');
+    await setImmediate();
+    assert.equal(offline.textContent, 'Offline');
+    assert.equal(badge.hidden, true);
+    await badge.click();
+    assert.deepEqual(copied, []);
+    state.connected = true;
+    fixture.poll();
+    await setImmediate();
+    assert.equal(badge.textContent, `${browser}-default`);
+    assert.equal(offline.hidden, true);
+    state.socketName = 'w'.repeat(32);
+    fixture.poll();
+    await setImmediate();
+    assert.equal(badge.textContent, state.socketName);
+    assert.equal(badge.hidden, false);
+    assert.match(badge.attributes['aria-label'], /Bridge online/);
+    await badge.click();
+    assert.deepEqual(copied, [state.socketName]);
+    assert.equal(select('#bridge-copy-status').textContent, '');
+    assert.equal(select('#copy-status').textContent, '');
+    state.bridgeError = 'Disconnected';
+    state.connected = false;
+    fixture.poll();
+    await setImmediate();
+    assert.equal(offline.textContent, 'Error');
+    assert.equal(badge.hidden, true);
+    await badge.click();
+    assert.deepEqual(copied, [state.socketName]);
+  }
 });
 
 test('Firefox popup saves only while stopped, refreshes status, and does not connect for tab approvals', async () => {
