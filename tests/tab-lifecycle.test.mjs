@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { forgetWorkspaceWindow, manageOwnedTab, openBackgroundTab } from '../extension/shared/tab-lifecycle.mjs';
+import { forgetWorkspaceWindow, manageOwnedTab, openBackgroundTab, watchManagedGroup } from '../extension/shared/tab-lifecycle.mjs';
 
 const href = 'https://example.test/';
 const normal = id => ({ id, type: 'normal', incognito: false });
@@ -42,6 +42,35 @@ test('background opens keep independent window anchors and recover after window 
   focused = 4;
   assert.equal((await open(owner)).windowId, 4);
   assert.equal((await open(bridge)).windowId, 3);
+});
+
+test('managed group assertions reject live ownership loss and relevant events after verification', async () => {
+  const selected = { id: 10, windowId: 2, groupId: 42 };
+  const sibling = { ...selected, id: 11 };
+  const owner = { groups: new Map([[2, 42]]) };
+  const owned = new Set([10, 11]);
+  const api = {
+    tabs: { group: noop, async get() { return selected; }, async query() { return [selected, sibling]; } },
+    tabGroups: { onMoved: event(), async get() { return { id: 42, windowId: 2 }; } },
+    windows: { onRemoved: event() },
+  };
+  const guard = watchManagedGroup(api);
+  const pin = () => guard.pin(owner, selected, id => owned.has(id));
+  const scope = pin();
+  await scope.verify();
+  api.windows.onRemoved.fire(3);
+  api.tabGroups.onMoved.fire({ id: 43, windowId: 2 });
+  scope.assertCurrent();
+  owned.delete(11);
+  assert.throws(scope.assertCurrent, /VABU-managed group/);
+  owned.add(11);
+  api.tabGroups.onMoved.fire({ id: 42, windowId: 2 });
+  assert.throws(scope.assertCurrent, /VABU-managed group/);
+  const next = pin();
+  await next.verify();
+  api.windows.onRemoved.fire(2);
+  assert.throws(next.assertCurrent, /VABU-managed group/);
+  assert.throws(scope.assertCurrent, /VABU-managed group/);
 });
 
 test('tab commands fail closed on navigation, permission or bridge changes', async () => {

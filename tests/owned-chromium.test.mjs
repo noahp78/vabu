@@ -25,7 +25,7 @@ async function until(check) {
   assert.fail('Timed out waiting for Chromium fixture');
 }
 
-test('isolated Chromium: background scroll, owned capture and dialogs, and feedback recall', {
+test('isolated Chromium: owned scroll, capture, dialogs, computed styles, eval under page CSP, and feedback recall', {
   skip: !chromium || process.platform !== 'linux', timeout: 30000,
 }, async (t) => {
   const dir = await mkdtemp(join(tmpdir(), 'vabu-chrome-'));
@@ -37,6 +37,7 @@ test('isolated Chromium: background scroll, owned capture and dialogs, and feedb
   let next = '';
   let polling = false;
   let result;
+  let allowEval = false, evalAllowed = false, evalMode, savedMode;
   let recallTab, recallResult;
   const orders = [];
   const scrollSteps = [];
@@ -58,11 +59,22 @@ test('isolated Chromium: background scroll, owned capture and dialogs, and feedb
       res.end();
     }
     else if (req.url.startsWith('/order/')) { orders.push(req.url.slice('/order/'.length)); res.end(); }
+    else if (req.url === '/allow-eval') { res.end(allowEval ? 'yes' : ''); allowEval = false; }
+    else if (req.url === '/eval-allowed') { evalAllowed = true; res.end(); }
+    else if (req.url === '/eval-mode') { res.end(evalMode ?? ''); evalMode = undefined; }
+    else if (req.url.startsWith('/eval-mode/')) { savedMode = req.url.slice('/eval-mode/'.length); res.end(); }
     else if (req.url === '/recall-fixture') { res.end(String(recallTab ?? '')); recallTab = undefined; }
     else if (req.url.startsWith('/recall-result?')) {
       recallResult = new URL(req.url, 'http://127.0.0.1').searchParams.get('value');
       res.end();
     }
+    else if (req.url === '/csp' || req.url === '/trusted-types') {
+      res.setHeader('Content-Security-Policy', req.url === '/csp' ? "script-src 'self'"
+        : "script-src 'self' 'unsafe-eval'; require-trusted-types-for 'script'; trusted-types 'none'");
+      res.setHeader('Content-Type', 'text/html');
+      res.end('<title>Restricted fixture</title>');
+    }
+    else if (req.url === '/other') { res.setHeader('Content-Type', 'text/html'); res.end('<title>Other owned tab</title>'); }
     else if (req.url.startsWith('/title?')) {
       titles.push(new URL(req.url, 'http://127.0.0.1').searchParams.get('value'));
       res.end();
@@ -76,6 +88,7 @@ test('isolated Chromium: background scroll, owned capture and dialogs, and feedb
         <div style="position: sticky; top: 0"><button>Panel target</button><button id="cancel">Cancel scroll</button></div>
         <div style="height: 600px"></div>
       </div><div style="height: 250vh"></div><script>
+        const target = document.querySelector('#style-target');
         const panel = document.querySelector('#panel');
         const wheels = [];
         document.addEventListener('wheel', e => wheels.push([e.deltaY, e.isTrusted]));
@@ -90,6 +103,9 @@ test('isolated Chromium: background scroll, owned capture and dialogs, and feedb
           if (action === 'alert') { alert('private alert'); await fetch('/result/true'); }
           if (action === 'confirm') await fetch('/result/' + confirm('private confirm'));
           if (action === 'prompt') await fetch('/result/' + (prompt('private prompt', 'private default') === null));
+          if (action === 'check-style') await fetch('/result/' + (
+            target.getAttribute('style') === 'font-size: 20px !important; margin: 2px 3px 4px 5px'
+          ));
           await new Promise(r => setTimeout(r, 100));
         } })();
       </script>`);
@@ -135,6 +151,21 @@ test('isolated Chromium: background scroll, owned capture and dialogs, and feedb
         return reply;
       };
     ` + await readFile(worker, 'utf8') + `
+      // Drive the decision layer in the disposable headless build; popup
+      // sender and UI behavior have separate coverage.
+      setInterval(async () => {
+        const requestedMode = await fetch(${JSON.stringify(url + 'eval-mode')}).then(r => r.text());
+        if (requestedMode) {
+          await evalApproval.setMode(requestedMode);
+          await fetch(${JSON.stringify(url + 'eval-mode/')} + (await evalApproval.status()).evalMode);
+        }
+        const pending = (await evalApproval.status()).evalApproval;
+        if (!pending) return;
+        const allowed = await fetch(${JSON.stringify(url + 'allow-eval')}).then(r => r.text());
+        if (allowed !== 'yes') return;
+        await evalApproval.decide('eval-approve', pending.token);
+        await fetch(${JSON.stringify(url + 'eval-allowed')});
+      }, 100);
       setInterval(async () => {
         const id = Number(await fetch(${JSON.stringify(url + 'recall-fixture')}).then(r => r.text()));
         if (!id) return;
@@ -185,23 +216,6 @@ test('isolated Chromium: background scroll, owned capture and dialogs, and feedb
     await until(() => titles.length);
     assert.equal(titles[0], '🟣 Owned fixture');
     assert.equal(await scoped('title'), 'Owned fixture');
-    const jpeg = join(dir, 'viewport.jpg');
-    assert.deepEqual(await scoped('screenshot', jpeg), { path: jpeg, format: 'jpeg' });
-    assert.deepEqual((await readFile(jpeg)).subarray(0, 3), Buffer.from([255, 216, 255]));
-    assert.equal((await stat(jpeg)).mode & 0o777, 0o600);
-    assert.equal((await scoped('tabs')).find(t => t.tab === tab).active, false);
-    await assert.rejects(cli('--session', sessionId, 'screenshot', jpeg), /EEXIST/);
-    for (const [i, [type, action]] of [['alert', 'accept'], ['confirm', 'accept'], ['prompt', 'dismiss']].entries()) {
-      next = type;
-      const dialog = await until(() => scoped('inspect-dialog', 'show').catch(() => null));
-      assert.deepEqual(dialog, { id: dialog.id, type });
-      assert.deepEqual(await scoped('inspect-dialog', action, dialog.id), { handled: true });
-      await until(() => result === '/result/true' && orders[i]);
-      assert.match(orders[i], /^(before|after)-resolution$/);
-      t.diagnostic(`${type}: Page.javascriptDialogClosed ${orders[i]}`);
-      result = undefined;
-      await assert.rejects(scoped('inspect-dialog', action, dialog.id), /stale/);
-    }
     const snapshot = await scoped('snapshot');
     const scrollStateAfter = async () => {
       scrollState = undefined;
@@ -223,6 +237,95 @@ test('isolated Chromium: background scroll, owned capture and dialogs, and feedb
       assert.equal((await scoped('tabs')).find(item => item.tab === tab).active, false);
     } finally { t.diagnostic('scroll trace: ' + scrollSteps.join(', ')); }
     assert.ok(scrollSteps.every(step => step.startsWith('page-')), 'background scroll never sends CDP mouse input');
+    const jpeg = join(dir, 'viewport.jpg');
+    assert.deepEqual(await scoped('screenshot', jpeg), { path: jpeg, format: 'jpeg' });
+    assert.deepEqual((await readFile(jpeg)).subarray(0, 3), Buffer.from([255, 216, 255]));
+    assert.equal((await stat(jpeg)).mode & 0o777, 0o600);
+    assert.equal((await scoped('tabs')).find(t => t.tab === tab).active, false);
+    await assert.rejects(cli('--session', sessionId, 'screenshot', jpeg), /EEXIST/);
+    for (const [i, [type, action]] of [['alert', 'accept'], ['confirm', 'accept'], ['prompt', 'dismiss']].entries()) {
+      next = type;
+      const dialog = await until(() => scoped('inspect-dialog', 'show').catch(() => null));
+      assert.deepEqual(dialog, { id: dialog.id, type });
+      assert.deepEqual(await scoped('inspect-dialog', action, dialog.id), { handled: true });
+      await until(() => result === '/result/true' && orders[i]);
+      assert.match(orders[i], /^(before|after)-resolution$/);
+      t.diagnostic(`${type}: Page.javascriptDialogClosed ${orders[i]}`);
+      result = undefined;
+      await assert.rejects(scoped('inspect-dialog', action, dialog.id), /stale/);
+    }
+    const query = css => scoped('inspect-query', JSON.stringify({ css }));
+    const ref = async css => (await query(css)).items[0].ref;
+    assert.equal((await query('#protected')).count, 0);
+    const stale = await ref('#style-target');
+    const target = await ref('#style-target');
+    const getStyles = (ref, ...terms) => scoped('get', 'styles', ref, ...terms);
+    await assert.rejects(getStyles(stale), /Stale inspection reference/);
+    await assert.rejects(getStyles(target, 'font-size'), /Usage: get styles @iREF/);
+    const { styles } = await getStyles(target);
+    assert.equal(Object.keys(styles).length, 20);
+    assert.equal(styles['font-size'], '20px');
+    assert.equal(styles['margin-top'], '2px');
+    assert.equal(styles['margin-left'], '5px');
+    assert.equal(styles.display, 'block');
+    assert.equal(typeof styles['font-family'], 'string');
+    assert.ok(Object.values(styles).every(value => typeof value === 'string' && value.length <= 1024));
+    for (const verb of ['style-read', 'style-set', 'style-reset']) await assert.rejects(scoped(verb), /Invalid command/);
+    const other = await scoped('open', url + 'other');
+    await until(() => scoped('use', String(other.tab)).catch(() => null));
+    await assert.rejects(getStyles(target), /Stale inspection reference/);
+    await scoped('use', String(tab));
+    await assert.rejects(getStyles(target), /Stale inspection reference/);
+    const current = await ref('#style-target');
+    next = 'check-style';
+    await until(() => result === '/result/true');
+    assert.equal((await scoped('tabs')).find(t => t.tab === tab).active, false);
+    assert.deepEqual(await scoped('tab-navigate', String(tab), url), { tab, requested: true });
+    assert.equal((await scoped('status')).tab, null);
+    await until(async () => {
+      try { await scoped('use', String(tab)); return true; } catch { return false; }
+    });
+    assert.equal((await scoped('status')).tab, tab);
+    await assert.rejects(getStyles(current), /Stale inspection reference/);
+    assert.equal((await getStyles(await ref('#style-target'))).styles['font-size'], '20px');
+    const evaluate = (...args) => scoped('eval', ...args);
+    const approve = async (expression) => {
+      await assert.rejects(evaluate(expression), /Open the VABU popup/);
+      evalAllowed = false;
+      allowEval = true;
+      await until(() => evalAllowed);
+    };
+    const expression = '({main: !!target, count: window.evalCount = (window.evalCount || 0) + 1})';
+    await approve(expression);
+    assert.deepEqual(await evaluate(expression), { main: true, count: 1 });
+    await assert.rejects(evaluate(expression), /Open the VABU popup/);
+    await approve(expression);
+    await scoped('tab-navigate', String(tab), url);
+    await until(() => scoped('use', String(tab)).catch(() => null));
+    await assert.rejects(evaluate(expression), /Open the VABU popup/);
+    await approve('window.evalCount ?? 0');
+    assert.equal(await evaluate('window.evalCount ?? 0'), 0);
+    await approve(expression);
+    assert.deepEqual(await evaluate(expression), { main: true, count: 1 });
+    for (const [code, pattern] of [['Promise.resolve(1)', /not a synchronous JSON value/],
+      ['"é".repeat(8192)', /exceeds 16 KiB/],
+      ['(() => { throw new Error("private exception"); })()', /^Eval expression is invalid or threw an exception$/]]) {
+      await approve(code);
+      await assert.rejects(evaluate(code), { message: pattern });
+    }
+    const setMode = async mode => {
+      evalMode = mode;
+      await until(() => savedMode === mode);
+    };
+    await setMode('off');
+    await assert.rejects(evaluate('1 + 1'), /Eval is off/);
+    await setMode('allow');
+    assert.equal(await evaluate('1 + 1'), 2);
+    for (const path of ['csp', 'trusted-types']) {
+      const restricted = await scoped('open', url + path);
+      await until(() => scoped('use', String(restricted.tab)).catch(() => null));
+      await assert.rejects(evaluate('location.origin'), /blocked by the page’s Content Security Policy or Trusted Types/);
+    }
     await scoped('release');
     recallTab = tab;
     assert.equal(await until(() => recallResult), 'ok');

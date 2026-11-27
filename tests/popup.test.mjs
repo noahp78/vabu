@@ -19,7 +19,7 @@ function popup(browser) {
     if (!elements.has(id)) elements.set(id, { ...element(), hidden: id !== '#home-view' });
     return elements.get(id);
   };
-  const state = { browser, connected: false, starting: false, socketName: `${browser}-default`, socketOverride: null };
+  const state = { browser, connected: false, starting: false, socketName: `${browser}-default`, socketOverride: null, evalMode: 'ask' };
   const actions = [];
   const decisions = [];
   const copied = [];
@@ -45,9 +45,18 @@ function popup(browser) {
         state.socketOverride = message.socketOverride;
         state.socketName = message.socketOverride ?? `${browser}-default`;
       }
+      if (message.action === 'set-eval-mode') {
+        if (fixture.failSave) return { error: 'Storage unavailable' };
+        state.evalMode = message.evalMode;
+        delete state.evalApproval;
+      }
       if (message.action === 'start') state.connected = true;
       if (message.action === 'stop') state.connected = false;
       if (['feedback-start', 'feedback-recall'].includes(message.action) && fixture.feedbackError) return { error: fixture.feedbackError };
+      if (['eval-approve', 'eval-deny'].includes(message.action)) {
+        if (message.token !== state.evalApproval?.token) return { error: 'Request expired' };
+        delete state.evalApproval;
+      }
       return { ok: true };
     },
     connect({ name }) {
@@ -263,6 +272,68 @@ test('sent annotations offer one trusted recall action that closes the popup onl
   await button.click({ isTrusted: true });
   assert.deepEqual(actions.at(-1), { action: 'feedback-recall' });
   assert.deepEqual(permissionActions, [['close']]);
+});
+
+test('JavaScript mode is saved only on a trusted submit, even when the bridge is stopped', async () => {
+  const fixture = popup('firefox');
+  const { select, state, actions } = fixture;
+  await setImmediate();
+  const mode = select('#eval-mode');
+  const save = select('#eval-mode-save');
+  const submit = isTrusted => select('#eval-settings-form').submit({ isTrusted, preventDefault() {} });
+  assert.equal(mode.value, 'ask');
+  assert.equal(save.disabled, true);
+  mode.value = 'allow';
+  mode.change();
+  fixture.poll();
+  await setImmediate();
+  assert.equal(mode.value, 'allow');
+  assert.equal(save.disabled, false);
+  submit(false);
+  assert.equal(state.evalMode, 'ask');
+  fixture.failSave = true;
+  submit(true);
+  await setImmediate();
+  assert.match(select('#eval-settings-status').textContent, /Storage unavailable/);
+  assert.equal(state.evalMode, 'ask');
+  fixture.failSave = false;
+  submit(true);
+  await setImmediate();
+  assert.deepEqual(actions.slice(-2), [{ action: 'set-eval-mode', evalMode: 'allow' }, { action: 'status' }]);
+  assert.equal(state.evalMode, 'allow');
+  assert.equal(save.disabled, true);
+  assert.equal(select('#eval-settings-status').textContent, '');
+});
+
+test('popup displays the exact eval request for one trusted approve or deny decision', async () => {
+  for (const browser of ['chrome', 'firefox']) {
+    const fixture = popup(browser);
+    const { state, select, actions } = fixture;
+    state.connected = true;
+    state.evalApproval = { token: 'first', origin: 'https://example.test', expression: '\u202e<test>' };
+    await setImmediate();
+    fixture.poll();
+    await setImmediate();
+    assert.equal(select('#eval-approval').hidden, false);
+    assert.equal(select('#eval-origin').textContent, state.evalApproval.origin);
+    assert.equal(select('#eval-expression').textContent, '\\u{202e}<test>');
+    await select('#eval-allow').click({ isTrusted: false });
+    assert.ok(actions.every(({ action }) => action === 'status'));
+    await select('#eval-allow').click({ isTrusted: true });
+    await setImmediate();
+    assert.deepEqual(actions.slice(-2), [{ action: 'eval-approve', token: 'first' }, { action: 'status' }]);
+    assert.equal(select('#eval-approval').hidden, true);
+    assert.match(select('#eval-status').textContent, /Retry the same/);
+    state.evalApproval = { token: 'second', origin: 'https://example.test', expression: '1 + 1' };
+    fixture.poll();
+    await setImmediate();
+    assert.equal(select('#eval-expression').textContent, '1 + 1');
+    await select('#eval-deny').click({ isTrusted: true });
+    await setImmediate();
+    assert.deepEqual(actions.slice(-2), [{ action: 'eval-deny', token: 'second' }, { action: 'status' }]);
+    assert.equal(select('#eval-approval').hidden, true);
+    assert.match(select('#eval-status').textContent, /denied/);
+  }
 });
 
 test('Chrome popup connects for tab approvals and requires a trusted click with a pending token', async () => {

@@ -24,12 +24,12 @@ While the bridge runs, requested browser data is shared with the local CLI. VABU
 | `scripting` | Run bundled code to inspect selected documents and interact with their controls. |
 | `debugger` (Chrome) | Send tab-scoped input in Chrome, capture the viewport of an owned tab without switching tabs, and handle supported JavaScript dialogs there. The CLI does not expose arbitrary debugger commands. |
 | `tabGroups` | Name and color groups for tabs opened by VABU, including named sessions. |
-| `storage` | Remember the local socket name and, on Chrome, whether the bridge was stopped for the browser session. |
+| `storage` | Remember the local socket name, the JavaScript execution mode and, on Chrome, whether the bridge was stopped for the browser session. |
 | `webNavigation` | Check document and frame identity and invalidate stale selections after navigation. |
 | HTTP(S) host access | Let the CLI open and inspect user-selected HTTP(S) sites, including background tabs, without requiring that a user first click each tab. Browser site-access settings still apply; Chrome requires separate approval for control of pre-existing tabs. |
 | Optional all-sites grant (Firefox) | Firefox’s tab-ID capture API requires this for viewport screenshots. It is not granted by the CLI and can be revoked in the popup. |
 
-The browser package contains its own JavaScript and does not download or execute remote JavaScript. Disclose that URLs, page content and website interactions may pass to the local CLI; do not describe it as processing only inside the browser. For AMO, the declared categories are browsing activity, website content, and website activity.
+The browser package contains its own implementation and does not fetch scripts from a server to execute them. Disclose `eval` separately: a local CLI caller can provide an expression for a selected, verified VABU-opened tab in its managed group, subject to the profile’s approval setting and the page’s policy. Store acceptance of this capability has not been verified; confirm it before distribution. Disclose that URLs, page content and website interactions may pass to the local CLI; do not describe it as processing only inside the browser. For AMO, the declared categories are browsing activity, website content, and website activity.
 
 ## Build and source submission
 

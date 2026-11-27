@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { runInNewContext } from 'node:vm';
-import { commands, inspectionPage } from '../extension/shared/inspection.mjs';
+import { commands, inspectionPage, getStyles } from '../extension/shared/inspection.mjs';
 
 const locator = (by, value, extra) => JSON.stringify({ all: [{ by, value }], ...extra });
 const button = locator('role', 'button');
@@ -40,7 +40,13 @@ function fixture(t) {
     readyState: 'complete', contains: (el) => all.includes(el),
     querySelectorAll: (css) => all.filter((el) => el.isConnected && el.matches(css)),
   };
-  for (const el of all) el.ownerDocument = page.document;
+  for (const el of all) {
+    el.ownerDocument = page.document;
+    el.getRootNode = () => page.document;
+  }
+  page.window = {};
+  page.window.top = page.window;
+  page.getComputedStyle = () => ({ getPropertyValue: property => property === 'font-family' ? 'a'.repeat(1200) : property });
   const props = [...Object.keys(page), 'vabuInspectionState'];
   const original = Object.fromEntries(props.map((prop) => [prop, Object.getOwnPropertyDescriptor(globalThis, prop)]));
   t.after(() => {
@@ -124,6 +130,61 @@ test('06–07: refs belong to a live document, selected session and latest query
   const third = await getRef();
   save.isConnected = false;
   await assert.rejects(call('element', [third], ctx), /Stale/);
+});
+
+test('computed styles accept only a fresh main-document query ref and return fixed bounded values', async (t) => {
+  const { ctx, save } = fixture(t);
+  const query = () => call('query', [locator('name', 'Save')], ctx);
+  const { items: [{ ref }] } = await query();
+  const rejected = { verify: assert.fail, run: assert.fail };
+  for (const terms of [[], ['button'], ['@r1'], ['--frame', '1', ref], [ref, 'display']]) {
+    await assert.rejects(getStyles(terms, rejected, assert.fail), /Usage/);
+  }
+  const styles = (value, frame = null, href = location.href) => inspectionPage(origin, 'session/doc', 'styles', value, frame, href);
+  const result = styles(ref);
+  assert.equal(result.ok, true);
+  assert.deepEqual(Object.keys(result.value.styles), [
+    'font-family', 'font-size', 'font-weight', 'line-height', 'color', 'background-color',
+    'display', 'position', 'box-sizing', 'width', 'height',
+    'margin-top', 'margin-right', 'margin-bottom', 'margin-left',
+    'padding-top', 'padding-right', 'padding-bottom', 'padding-left', 'gap',
+  ]);
+  assert.equal(result.value.styles['font-family'].length, 1024);
+  assert.equal(result.value.styles['padding-left'], 'padding-left');
+  assert.match(styles(ref, null, `${origin}/other`).error, /verified main document/);
+  await query();
+  assert.match(styles(ref).error, /Stale/);
+  const { items: [current] } = await query();
+  save.isConnected = false;
+  assert.match(styles(current.ref).error, /Stale/);
+});
+
+test('computed style results require verification around the operation and again before reply', async () => {
+  const ref = '@i00000000-0000-4000-8000-000000000000:1';
+  let valid = true;
+  const checks = [];
+  const scope = {
+    async verify() { assert.ok(valid, 'grant or document changed'); checks.push('verify'); },
+    assertCurrent() { checks.push('current'); },
+    run(operation, spec) {
+      assert.equal(operation, 'styles');
+      assert.equal(spec, ref);
+      checks.push('styles');
+      return { ok: true, value: { styles: { color: 'red' } } };
+    },
+  };
+  let beforeReply;
+  assert.deepEqual(await getStyles([ref], scope, (verify, assertCurrent) => {
+    beforeReply = async () => { await verify(); assertCurrent(); };
+  }), { styles: { color: 'red' } });
+  assert.deepEqual(checks, ['verify', 'current', 'styles', 'verify', 'current']);
+  valid = false;
+  await assert.rejects(beforeReply(), /changed/);
+  await assert.rejects(getStyles([ref], { ...scope, run: assert.fail }, assert.fail), /changed/);
+  valid = true;
+  await assert.rejects(getStyles([ref], {
+    ...scope, run: () => { valid = false; return { ok: true, value: { styles: { color: 'red' } } }; },
+  }, assert.fail), /changed/);
 });
 
 test('08: frame scope pins the intended document and checks approval before and after inspection', async () => {

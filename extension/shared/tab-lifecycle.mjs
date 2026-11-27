@@ -12,6 +12,82 @@ export function forgetWorkspaceWindow(connection, id) {
   }
 }
 
+// One live selection per worker. Events invalidate an existing scope permanently,
+// including when a group change is undone before an outstanding read returns.
+export function watchManagedGroup(api) {
+  let active;
+  function clear() {
+    if (active) active.invalid = true;
+    active = undefined;
+  }
+  function tabChanged(id, groupId) {
+    if (!active) return;
+    if (groupId === active.groupId || active.members.has(id)) clear();
+    // Other tabs matter only if an outstanding query returns them as owned members.
+    else if (active.reads.size && active.ownsTab(id)) for (const changes of active.reads) changes.add(id);
+  }
+  api.tabs.onUpdated?.addListener((id, change) => {
+    if (Object.hasOwn(change, 'groupId')) tabChanged(id, change.groupId);
+  });
+  api.tabs.onCreated?.addListener(tab => tabChanged(tab.id, tab.groupId));
+  api.tabs.onRemoved?.addListener(id => tabChanged(id));
+  api.tabs.onReplaced?.addListener((added, removed) => { tabChanged(added); tabChanged(removed); });
+  api.tabs.onMoved?.addListener(id => tabChanged(id));
+  api.tabs.onDetached?.addListener(id => tabChanged(id));
+  api.tabs.onAttached?.addListener((id, { newWindowId }) => {
+    // The attach event does not identify the destination group.
+    if (active?.windowId === newWindowId) clear();
+    else tabChanged(id);
+  });
+  const groupChanged = ({ id }) => { if (active?.groupId === id) clear(); };
+  api.tabGroups?.onMoved?.addListener(groupChanged);
+  api.tabGroups?.onRemoved?.addListener(groupChanged);
+  api.tabGroups?.onUpdated?.addListener(({ id, windowId }) => {
+    if (active?.groupId === id && Number.isInteger(windowId) && windowId !== active.windowId) clear();
+  });
+  api.windows?.onRemoved?.addListener(id => { if (active?.windowId === id) clear(); });
+
+  function pin(owner, selection, ownsTab) {
+    if (active?.selection === selection && active.owner === owner) return active.scope;
+    clear();
+    const { id, windowId, groupId } = selection;
+    const entry = active = { selection, owner, windowId, groupId, ownsTab, members: new Set([id]), reads: new Set() };
+    const unavailable = () => new Error('Select a tab still in a VABU-managed group in this workspace');
+    const assertCurrent = () => {
+      if (entry.invalid || typeof api.tabs.group !== 'function' || typeof api.tabs.query !== 'function'
+        || typeof api.tabGroups?.get !== 'function' || !Number.isInteger(windowId) || !Number.isInteger(groupId) || groupId < 0
+        || owner.groups.get(windowId) !== groupId) throw unavailable();
+      for (const member of entry.members) if (!ownsTab(member)) throw unavailable();
+    };
+    const inGroup = tab => tab?.windowId === windowId && tab.groupId === groupId && !tab.incognito;
+    const verify = async () => {
+      assertCurrent();
+      const changes = new Set();
+      entry.reads.add(changes);
+      try {
+        const tab = await api.tabs.get(id).catch(() => null);
+        if (tab?.id !== id || !inGroup(tab)) throw unavailable();
+        assertCurrent();
+        const group = await api.tabGroups.get(groupId).catch(() => null);
+        if (group?.id !== groupId || group.windowId !== windowId) throw unavailable();
+        assertCurrent();
+        const members = await api.tabs.query({ groupId }).catch(() => null);
+        assertCurrent();
+        if (!members?.some(member => member.id === id)
+          || !members.every(member => inGroup(member) && ownsTab(member.id) && !changes.has(member.id))) throw unavailable();
+        entry.members = new Set(members.map(member => member.id));
+      } catch (error) {
+        if (active === entry) clear();
+        throw error;
+      } finally {
+        entry.reads.delete(changes);
+      }
+    };
+    return entry.scope = { assertCurrent, verify };
+  }
+  return { pin, clear };
+}
+
 export async function openBackgroundTab(api, owner, url, assertBridge, browserName) {
   const first = owner.windowId === undefined;
   if (first) {

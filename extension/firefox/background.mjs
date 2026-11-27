@@ -2,14 +2,15 @@ import { domainPattern, hasHostAccess, webUrl } from '../shared/domains.js';
 import { isToolbarPopup, setBridgeIcon } from '../shared/toolbar.mjs';
 import { defaultSocketNames, socketNameError, validSocketName } from '../shared/socket-name.mjs';
 import { commands as interaction } from '../shared/interaction.mjs';
-import { commands as inspection, isFrameInspection, runListedFrameInspection } from '../shared/inspection.mjs';
+import { commands as inspection, inspectionPage, isFrameInspection, runListedFrameInspection, getStyles } from '../shared/inspection.mjs';
 import { commands as scoped } from '../shared/scoped-snapshot.mjs';
 import { commands as find } from '../shared/find-click.mjs';
 import { commands as wait } from '../shared/wait.mjs';
 import { commands as get } from '../shared/get-element.mjs';
 import { captureOptions, captureResponse, validateCapture } from '../shared/capture-jpeg.mjs';
 import { feedbackCount, handleFeedback, invalidateFeedback, listFeedback, takeFeedback } from '../shared/feedback.mjs';
-import { forgetWorkspaceWindow, manageOwnedTab, openBackgroundTab } from '../shared/tab-lifecycle.mjs';
+import { forgetWorkspaceWindow, manageOwnedTab, openBackgroundTab, watchManagedGroup } from '../shared/tab-lifecycle.mjs';
+import { createEvalApproval } from '../shared/eval.mjs';
 import { navigationTiming } from '../shared/navigation-timing.mjs';
 import { createFirefoxFrameScope, hasDocumentId, hasFrameApis, injectDocument, navigationEvents, unavailable } from './frame-read.mjs';
 
@@ -19,10 +20,14 @@ let bridge;
 let bridgeError;
 let bridgeTransition = Promise.resolve();
 let selected;
+const evalApproval = createEvalApproval(browser);
+const managedGroup = watchManagedGroup(browser);
 
 function release(s = selected) {
   if (!s || s !== selected) return;
   selected = undefined;
+  managedGroup.clear();
+  evalApproval.clear(s);
   s.port?.disconnect();
   s.pending?.reject(new Error('Selected document changed or was released'));
 }
@@ -95,6 +100,12 @@ browser.runtime.onMessage.addListener((message, sender) => {
     if (!isToolbarPopup(browser.runtime, sender)) return false;
     return Promise.resolve(listFeedback(bridge));
   }
+  if (['eval-approve', 'eval-deny', 'set-eval-mode'].includes(message?.action)) {
+    if (!isToolbarPopup(browser.runtime, sender)) return false;
+    const result = message.action === 'set-eval-mode' ? evalApproval.setMode(message.evalMode)
+      : evalApproval.decide(message.action, message.token);
+    return result.catch(error => ({ error: error.message }));
+  }
   if (sender.url !== browser.runtime.getURL('shared/popup.html') || !['status', 'start', 'stop', 'set-socket'].includes(message?.action)) return false;
   // Serialize setting writes and launches, but let Stop cancel the native handshake.
   const transition = bridgeTransition.then(async () => {
@@ -104,7 +115,7 @@ browser.runtime.onMessage.addListener((message, sender) => {
       return { browser: 'firefox', connected: bridge?.online === true, starting: !!bridge && !bridge.online,
         socketName: bridge?.socketName ?? socketOverride ?? defaultSocketName, socketOverride,
         bridgeError: bridgeError ?? (saved === socketOverride ? undefined : invalidSavedSocketName),
-        ...(isToolbarPopup(browser.runtime, sender) ? { feedbackCount: feedbackCount(bridge) } : {}) };
+        ...(isToolbarPopup(browser.runtime, sender) ? { ...await evalApproval.status(), feedbackCount: feedbackCount(bridge) } : {}) };
     }
     if (message.action === 'set-socket') {
       if (bridge) throw new Error('Stop the local bridge before changing its socket name');
@@ -213,7 +224,8 @@ async function select(connection, id, workspace) {
   if (!url || tab.status === 'loading') throw new Error('Firefox has not granted access to a loaded HTTP(S) document in this tab');
   if (bridge !== connection) throw new Error('Bridge stopped');
   release();
-  const s = selected = { id, workspace, href: url.href, origin: url.origin };
+  const s = selected = { id, workspace, href: url.href, origin: url.origin, key: crypto.randomUUID(),
+    windowId: tab.windowId, groupId: tab.groupId };
   try {
     const frame = frameApis && (workspace ?? connection).ownedTabs.has(id)
       && await browser.webNavigation.getFrame({ tabId: id, frameId: 0 });
@@ -234,7 +246,7 @@ async function select(connection, id, workspace) {
     port.onMessage.addListener(({ id, result }) => {
       if (id === s.pending?.id) s.pending.resolve(result);
     });
-    await page(s, 'init', s.href, s.origin, crypto.randomUUID());
+    await page(s, 'init', s.href, s.origin, s.key);
     return await current(s);
   } catch (error) {
     release(s);
@@ -375,7 +387,34 @@ function ownedDocumentScope(connection, workspace, s, feature) {
     assertCurrent();
     return info(tab, webUrl(href));
   };
-  return { id, documentId, href, owner, verify, assertCurrent };
+  return { id, documentId, href, origin, owner, verify, assertCurrent };
+}
+
+function groupedDocumentScope(connection, workspace, s, feature) {
+  const document = ownedDocumentScope(connection, workspace, s, feature);
+  const { owner } = document;
+  const group = managedGroup.pin(owner, s, id => owner.ownedTabs.has(id));
+  const assertCurrent = () => {
+    document.assertCurrent();
+    group.assertCurrent();
+  };
+  return { ...document, assertCurrent,
+    async verify() {
+      assertCurrent();
+      await document.verify();
+      await group.verify();
+      assertCurrent();
+    } };
+}
+
+function runStyles(connection, workspace, s, terms, setBeforeReply) {
+  const scope = groupedDocumentScope(connection, workspace, s, 'computed styles');
+  const { id, documentId, origin, href } = scope;
+  return getStyles(terms, { ...scope, run: (operation, ref) =>
+    injectDocument(browser, id, { documentId, frameId: 0 }, {
+      func: inspectionPage, args: [origin, s.key, operation, ref, null, href],
+    }),
+  }, setBeforeReply);
 }
 
 async function runCapture(connection, workspace, s, terms, setBeforeReply) {
@@ -500,7 +539,10 @@ async function command(connection, args, setBeforeReply) {
     setBeforeReply(scope.verify, scope.assertCurrent);
     return value;
   }
+  if (verb === 'eval') return evalApproval.run(s, terms,
+    () => groupedDocumentScope(connection, workspace, s, 'eval expressions'), setBeforeReply);
   if (verb === 'screenshot') return runCapture(connection, workspace, s, terms, setBeforeReply);
+  if (verb === 'get' && terms[0] === 'styles') return runStyles(connection, workspace, s, terms.slice(1), setBeforeReply);
   const findTicket = verb === 'find' ? crypto.randomUUID() : undefined;
   const ctx = {
     origin: s?.origin,

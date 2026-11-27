@@ -58,6 +58,8 @@ vabu --socket firefox-default status         # default Firefox socket
 
 Put `--socket NAME` before the command (and before `--session ID` if using a named session). Stopping the bridge releases the selection and invalidates its session IDs and references.
 
+In **Settings → JavaScript execution**, choose whether to disable `eval`, ask each time, or allow it without prompting on eligible VABU-created tabs that are still in their VABU group. This choice is saved per browser profile. Keep the default **Ask every time** if you do not want local callers to run code without explicit approval.
+
 ## Transport and troubleshooting
 
 - The CLI and native host use `$XDG_RUNTIME_DIR/vabu/<name>.sock` if `XDG_RUNTIME_DIR` is an absolute path. Otherwise they use `${XDG_CACHE_HOME:-$HOME/.cache}/vabu/<name>.sock`, ignoring relative XDG paths. The runtime root must be owned by you and have mode `0700`; the cache root must be owned by you and not writable by others. The roots and private `vabu` directory must not be symlinks. If the socket pathname is too long, use a shorter name or a shorter compliant XDG path.

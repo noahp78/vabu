@@ -2,7 +2,7 @@ import { hasHostAccess, webUrl } from '../shared/domains.js';
 import { isToolbarPopup, setBridgeIcon } from '../shared/toolbar.mjs';
 import { defaultSocketNames, socketNameError, validSocketName } from '../shared/socket-name.mjs';
 import { commands as interaction, interactionInPage } from '../shared/interaction.mjs';
-import { commands as inspection, inspectionPage, isFrameInspection, runListedFrameInspection } from '../shared/inspection.mjs';
+import { commands as inspection, inspectionPage, isFrameInspection, runListedFrameInspection, getStyles } from '../shared/inspection.mjs';
 import { commands as integrations, inPageIntegration } from './integrations.mjs';
 import { commands as sessions, browserWideCommands, createSessionState } from './sessions.mjs';
 
@@ -15,7 +15,8 @@ import { captureOwnedViewport } from './owned-capture.mjs';
 import { captureOptions, captureResponse } from '../shared/capture-jpeg.mjs';
 import { createOwnedDialog } from './owned-dialog.mjs';
 import { feedbackCount, handleFeedback, invalidateFeedback, listFeedback, takeFeedback } from '../shared/feedback.mjs';
-import { forgetWorkspaceWindow, manageOwnedTab, openBackgroundTab } from '../shared/tab-lifecycle.mjs';
+import { forgetWorkspaceWindow, manageOwnedTab, openBackgroundTab, watchManagedGroup } from '../shared/tab-lifecycle.mjs';
+import { createEvalApproval } from '../shared/eval.mjs';
 import { navigationTiming } from '../shared/navigation-timing.mjs';
 
 const adapterCommands = { __proto__: null, ...interaction, ...inspection, ...integrations, ...elementCommands, ...waitCommands, ...scopedCommands, ...findCommands };
@@ -35,6 +36,8 @@ const idleGroupTitle = 'VABU';
 const activeGroupTitle = 'VABU actief';
 const approvalLifetime = 60_000;
 const popupUrl = chrome.runtime.getURL('shared/popup.html');
+const evalApproval = createEvalApproval(chrome);
+const managedGroup = watchManagedGroup(chrome);
 const navigation = chrome.webNavigation;
 const canCheckDocument = typeof navigation?.getFrame === 'function'
   && navigation.onBeforeNavigate && navigation.onCommitted && chrome.runtime.onConnect;
@@ -221,6 +224,7 @@ function startBridge(socketOverride) {
       response = { error: error.message };
     } finally {
       connection.busy = false;
+      connection.evalRunning = false;
     }
     if (bridge === connection) port.postMessage({ id: msg.id, ...response });
   });
@@ -313,10 +317,17 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
     reply(listFeedback(bridge));
     return false;
   }
+  if (['eval-approve', 'eval-deny', 'set-eval-mode'].includes(message?.action)) {
+    if (!isToolbarPopup(chrome.runtime, sender)) return false;
+    const result = message.action === 'set-eval-mode' ? evalApproval.setMode(message.evalMode)
+      : evalApproval.decide(message.action, message.token);
+    result.then(reply, error => reply({ error: error.message }));
+    return true;
+  }
   if (sender.url !== popupUrl || !['status', 'start', 'stop', 'set-socket'].includes(message?.action)) return false;
   const response = message.action === 'status'
-    ? tryAutoStart().then(() => changeBridge('status')).then(status => ({
-      ...status, ...(isToolbarPopup(chrome.runtime, sender) ? { feedbackCount: feedbackCount(bridge) } : {}),
+    ? tryAutoStart().then(() => changeBridge('status')).then(async status => ({
+      ...status, ...(isToolbarPopup(chrome.runtime, sender) ? { ...await evalApproval.status(), feedbackCount: feedbackCount(bridge) } : {}),
     }))
     : changeBridge(message.action, message.socketOverride);
   response.then((result) => reply(result ?? { ok: true }), (error) => reply({ error: error.message }));
@@ -339,7 +350,10 @@ chrome.debugger.onDetach.addListener(({ tabId }) => {
 chrome.debugger.onEvent.addListener(({ tabId, sessionId }, method, params) => {
   const s = session;
   if (!s || s.id !== tabId || sessionId !== undefined) return;
-  recordConsole(s, method, params);
+  // Do not retain eval's console messages or exception details.
+  if (!bridge?.evalRunning || !['Runtime.consoleAPICalled', 'Runtime.exceptionThrown'].includes(method)) {
+    recordConsole(s, method, params);
+  }
   const dialog = s.dialogScope?.dialog;
   if (method === 'Page.javascriptDialogOpening') {
     s.modalOpen = true;
@@ -376,6 +390,8 @@ function invalidateFrameScope(tabId) {
 }
 
 function invalidateOwnedDocument(s) {
+  managedGroup.clear();
+  evalApproval.clear(s);
   s.lastCapture = undefined;
   s.ownedDocumentVersion = (s.ownedDocumentVersion ?? 0) + 1;
   s.dialogScope?.dialog.dispose();
@@ -814,6 +830,8 @@ async function click(connection, s, target, y, wasActive, documentId = s.documen
   return { ...point, dispatched: true };
 }
 
+const mainInspectionKey = (s) => `${s.overlayKey}:${s.ownedDocumentVersion ?? 0}`;
+
 async function runAdapter(connection, verb, args) {
   const s = session;
   const documentId = s?.documentId;
@@ -863,8 +881,9 @@ async function runAdapter(connection, verb, args) {
     inspectionScope: async (frameId) => {
       if (frameId !== 0) throw new Error('Subframe inspection is not enabled');
       await assertCurrent();
+      const key = mainInspectionKey(s);
       return { documentId, assertCurrent,
-        run: async (operation, value) => unwrap(await inject(inspectionPage, s.overlayKey, operation, value)),
+        run: async (operation, value) => unwrap(await inject(inspectionPage, key, operation, value)),
       };
     },
     integrationLayoutMetrics: async () => { await assertCurrent(); return cdp(s, 'Page.getLayoutMetrics'); },
@@ -927,6 +946,51 @@ function ownedDocumentScope(connection, s) {
     return info;
   };
   return { parent, assertCurrent, verify };
+}
+
+async function groupedDocumentScope(connection, s) {
+  requireOwnedSelection(connection, s);
+  const document = ownedDocumentScope(connection, s);
+  const { parent } = document;
+  const owner = s.workspace ?? connection;
+  const group = managedGroup.pin(owner, s, id => connection.ownedTabs.has(id)
+    && (s.workspace ? s.workspace.tabs.has(id) : ![...connection.workspaces.values()].some(({ tabs }) => tabs.has(id))));
+  const assertCurrent = () => {
+    document.assertCurrent();
+    group.assertCurrent();
+  };
+  assertCurrent();
+  parent.url = (await chrome.tabs.get(parent.id)).url;
+  return { id: parent.id, documentId: parent.documentId, origin: parent.origin, href: parent.url, assertCurrent,
+    async verify() {
+      assertCurrent();
+      await document.verify();
+      await group.verify();
+      assertCurrent();
+    } };
+}
+
+function runEval(connection, terms, setBeforeReply) {
+  connection.evalRunning = true;
+  const s = session;
+  return evalApproval.run(s, terms, () => groupedDocumentScope(connection, s), setBeforeReply);
+}
+
+async function runStyles(connection, terms, setBeforeReply) {
+  const s = session;
+  const scope = await groupedDocumentScope(connection, s);
+  const { id, documentId, origin, href } = scope;
+  const key = mainInspectionKey(s);
+  return getStyles(terms, { ...scope, run: async (operation, ref) => {
+    const results = await chrome.scripting.executeScript({
+      target: { tabId: id, documentIds: [documentId] }, world: 'ISOLATED', func: inspectionPage,
+      args: [origin, key, operation, ref, null, href],
+    });
+    if (results?.length !== 1 || results[0].documentId !== documentId || results[0].frameId !== 0 || results[0].error !== undefined) {
+      throw new Error('Selected document changed');
+    }
+    return results[0].result;
+  } }, setBeforeReply);
 }
 
 function recordConsole(s, method, params) {
@@ -1255,7 +1319,7 @@ async function command(connection, args, setBeforeReply) {
       const userDocument = request && { id, origin: request.origin, url: request.url, documentId: request.documentId };
       if (request) clearApproval('used');
       s = session = { id, workspace, origin: info.origin, overlayKey: crypto.randomUUID(), ownedTabs,
-        userDocument, groupId: tab.groupId, documentId: userDocument?.documentId };
+        userDocument, windowId: tab.windowId, groupId: tab.groupId, documentId: userDocument?.documentId };
       await cdp(s, 'Page.enable');
       await checkedTab(s);
       if (!userDocument && !workspace && groups.get(tab.windowId) === s.groupId) {
@@ -1286,8 +1350,10 @@ async function command(connection, args, setBeforeReply) {
   if (verb === 'frame-list' || verb === 'frame-read' || isFrameInspection(verb, args.slice(1))) {
     return runFrameCommand(connection, verb, args.slice(1), setBeforeReply);
   }
+  if (verb === 'eval') return runEval(connection, args.slice(1), setBeforeReply);
   if (verb === 'console' || verb === 'js') return runDebug(connection, verb, args.slice(1), setBeforeReply);
   if (verb === 'screenshot') return runCapture(connection, args.slice(1), setBeforeReply);
+  if (verb === 'get' && a === 'styles') return runStyles(connection, args.slice(2), setBeforeReply);
   if (verb === 'inspect-dialog') return runDialog(connection, args.slice(1), setBeforeReply);
   if (verb === 'title' || Object.hasOwn(adapterCommands, verb)) return runAdapter(connection, verb, args.slice(1));
   const s = session;

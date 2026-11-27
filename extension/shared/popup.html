@@ -22,6 +22,14 @@
     </section>
     <p id="approval-status" role="status"></p>
 
+    <section id="eval-approval" class="card" aria-labelledby="eval-heading" hidden>
+      <h2 id="eval-heading">JavaScript request</h2>
+      <p>Run the code below on <code id="eval-origin"></code>? It can read or change the page as you.</p>
+      <pre id="eval-expression" tabindex="0" aria-label="Requested JavaScript"></pre>
+      <div class="actions"><button id="eval-deny" type="button">Deny</button><button id="eval-allow" class="primary" type="button">Allow once</button></div>
+    </section>
+    <p id="eval-status" class="hint" role="status"></p>
+
     <div id="home-view">
       <section class="card" aria-labelledby="bridge-heading">
         <div class="heading-row">
@@ -59,6 +67,23 @@
           <div class="socket-row"><input id="socket" name="socket" type="text" spellcheck="false" autocapitalize="off" aria-describedby="socket-hint socket-status" disabled><button id="socket-save" type="submit" disabled>Save</button></div>
           <p class="hint" id="socket-hint">To edit the name, go back and stop the bridge. Use a unique name per profile, or leave blank for the default.</p>
           <p id="socket-status" role="status"></p>
+        </form>
+      </section>
+
+      <section class="card" aria-labelledby="eval-settings-heading">
+        <h2 id="eval-settings-heading">JavaScript execution</h2>
+        <form id="eval-settings-form">
+          <label for="eval-mode">When VABU requests JavaScript execution</label>
+          <div class="socket-row">
+            <select id="eval-mode" aria-describedby="eval-settings-hint eval-settings-status" disabled>
+              <option value="off">Disabled</option>
+              <option value="ask" selected>Ask every time</option>
+              <option value="allow">Allow without asking</option>
+            </select>
+            <button id="eval-mode-save" type="submit" disabled>Save</button>
+          </div>
+          <p id="eval-settings-hint" class="hint">Only tabs VABU opened in its own tab groups are eligible. Without asking, code can read or change those pages as you.</p>
+          <p id="eval-settings-status" class="hint" role="status"></p>
         </form>
       </section>
 

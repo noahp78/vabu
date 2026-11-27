@@ -114,6 +114,17 @@ test('native hosts bind only after configuration and route CLI calls to distinct
     connection.send({ id, value: { ok: true } });
     assert.deepEqual(JSON.parse((await output).stdout), { ok: true });
   }
+  const ref = '@i00000000-0000-0000-0000-000000000001:1';
+  for (const [command, value] of [
+    [['get', 'styles', ref], { styles: { 'font-size': '16px', display: 'block' } }],
+    [['eval', 'document.title'], 'Demo page'],
+  ]) {
+    const output = run('--socket', 'work-1', '--session', 'demo', ...command);
+    const { id, args } = await profiles[2][0].next();
+    assert.deepEqual(args, ['--session', 'demo', ...command]);
+    profiles[2][0].send({ id, value });
+    assert.deepEqual(JSON.parse((await output).stdout), value);
+  }
   for (const args of [['--socket'], ['--socket', ''], ['--socket', '0'], ['--socket', 'Bad'],
     ['--socket', 'a-'], ['--socket', '../socket'], ['--socket', 'a'.repeat(33)]]) {
     await assert.rejects(run(...args), /Socket name/);

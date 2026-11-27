@@ -51,6 +51,7 @@ vabu inspect-query LOCATOR_JSON | inspect-element LOCATOR_JSON
 vabu inspect-wait visible|hidden TIMEOUT_MS LOCATOR_JSON
 vabu inspect-wait domcontentloaded|load TIMEOUT_MS
 vabu title | url | tab-info | assets | inspect-page | layout-metrics
+vabu [--session ID] eval EXPRESSION | get styles @iREF
 vabu session-start NAME | session-list
 vabu --session ID open URL | tabs | use TAB_ID | session-status | session-end
 vabu --session ID COMMAND ...  Target a named session; select its tab before page commands

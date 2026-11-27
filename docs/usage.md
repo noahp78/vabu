@@ -25,11 +25,38 @@ Open a tab with `vabu open URL`, then select it with `vabu use TAB_ID`. Keep the
 - `vabu console start` records without reloading. It cannot promise the complete console history.
 - `vabu console read` returns up to 100 recent console entries and uncaught exceptions from the top-level page at the selected origin, with a count of dropped entries. It does not include iframe, worker or browser network messages. Logs can contain sensitive data.
 - `vabu console stop` stops recording and clears the buffer. Releasing the tab, losing authorization, or leaving the selected origin also ends recording.
-
 ### Navigation timing in Chromium and Firefox
 
-`vabu js timing` returns navigation timing milestones in milliseconds for a selected, verified VABU-opened tab. It works in Chromium and Firefox 153+. It uses a bundled diagnostic. Console recording remains Chromium-only.
+`vabu js timing` returns navigation timing milestones in milliseconds for a selected, verified VABU-opened tab. It works in Chromium and Firefox 153+. It uses a bundled diagnostic, not `eval`, and does not require JavaScript approval. Console recording remains Chromium-only.
 
+## JavaScript expressions
+
+`vabu [--session ID] eval 'document.title'` runs one synchronous JavaScript expression in the selected main document. It works in Chromium and Firefox 153+ only on a loaded HTTP(S) tab that VABU opened in the current workspace and that remains in its VABU-managed group. Tabs moved out of that group and groups with unrelated tabs are not eligible.
+
+Open **Settings → JavaScript execution** to choose a mode for this browser profile:
+
+- **Disabled:** Reject `eval`.
+- **Ask every time** (default): Review the exact source and origin in the popup before each run.
+- **Allow without asking:** Run directly on eligible grouped tabs. Use this only if you trust local callers to run code as you on those pages.
+
+In **Ask every time** mode:
+
+1. `use TAB_ID` and request `eval EXPRESSION`.
+2. Open the VABU popup. Check the origin and exact code, then choose **Allow once** or **Deny**.
+3. If allowed, retry the identical `eval` command within 60 seconds. It can execute only once. If the document or selection changes, request fresh approval.
+
+The expression runs in the page’s JavaScript context and can read or change the page, make requests as you, or change its state. Treat results as untrusted page data and approve only code you understand. A page’s Content Security Policy or Trusted Types policy can block execution. The expression can be at most 4 KiB and must return a JSON value of at most 16 KiB. There is no support for frames, promises, DevTools helpers, or arbitrary debugger commands. VABU stops waiting for `eval` after five seconds so the bridge can accept other commands. This does not cancel code the browser already started. If execution fails or times out, inspect the page before retrying; effects might already have happened. CSS changes made through `eval` are not automatically undone.
+
+## Computed styles
+
+In Chromium and Firefox 153+, select a VABU-created tab in its VABU group with `use TAB_ID` and get a fresh main-document inspection ref with `inspect-query`. For example:
+
+```sh
+vabu --session ID inspect-query --brief '{"css":"html"}'
+vabu --session ID get styles '@iREF'
+```
+
+Replace `@iREF` with the actual ref. The read-only command returns `{ styles }` with a bounded set of computed typography, color, sizing and layout properties. It needs no JavaScript approval and does not read styles inside iframes. Use `eval` for CSS changes if enabled and permitted by the page; reload to clear simple DOM-only changes, taking care to preserve unsaved work.
 
 ## Page feedback
 
