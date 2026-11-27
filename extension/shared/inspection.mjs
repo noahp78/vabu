@@ -1,5 +1,17 @@
 const locatorKinds = ['css', 'role', 'text', 'name', 'label', 'testid', 'ref'];
 const refPattern = /^@i[\da-f-]{36}:[1-9]\d?$/;
+
+export async function getStyles(terms, { verify, assertCurrent, run }, setBeforeReply) {
+  if (terms.length !== 1 || !refPattern.test(terms[0])) throw new Error('Usage: get styles @iREF');
+  await verify();
+  assertCurrent();
+  const result = await run('styles', terms[0]);
+  await verify();
+  assertCurrent();
+  if (result?.ok !== true) throw new Error(result?.error || 'Computed style read failed');
+  setBeforeReply(verify, assertCurrent);
+  return result.value;
+}
 const only = (obj, keys) => obj && typeof obj === 'object' && !Array.isArray(obj)
   && Object.keys(obj).every((key) => keys.includes(key));
 
@@ -26,10 +38,11 @@ function selector(input) {
         const withoutData = part.replace(dataPresence, '.vabu-attribute');
         const structural = /^input(?=[.#\[])/i.test(part)
           ? withoutData.replace(inputAttribute, '.vabu-attribute') : withoutData;
-        return compound.test(structural);
+        const withoutPosition = structural.replace(/:nth-of-type\([1-9]\d{0,5}\)$/i, '');
+        return compound.test(withoutPosition) && Boolean(withoutPosition);
       };
       if (!value.split(/[> ]/).every(valid)) {
-        throw new Error('CSS locator supports only tags, IDs, classes, [data-*] presence, input[type=…], input[name^=…], and descendant/child combinators');
+        throw new Error('CSS locator supports only tags, IDs, classes, [data-*] presence, input[type=…], input[name^=…], :nth-of-type(N) with N from 1 to 999999, and descendant/child combinators');
       }
     }
     if (['name', 'label', 'text'].includes(item.by)) value = value.replace(/\s+/g, ' ');
@@ -248,7 +261,7 @@ export const commands = {
 };
 
 // Self-contained fixed function for chrome.scripting.executeScript, ISOLATED world only.
-export function inspectionPage(origin, key, operation, spec, frameScope) {
+export function inspectionPage(origin, key, operation, spec, frameScope, expectedHref) {
   try {
     if (typeof key !== 'string' || !key || !/^https?:$/.test(location.protocol)
       || location.origin !== origin || globalThis.origin !== origin) {
@@ -336,6 +349,21 @@ export function inspectionPage(origin, key, operation, spec, frameScope) {
       const { x, y, width, height } = el.getBoundingClientRect();
       return { tag: el.localName, role: role(el), name: name(el).slice(0, 150), text: text(el).slice(0, 500),
         visible: visible(el), enabled: enabled(el), rect: { x, y, width, height } };
+    }
+    if (operation === 'styles') {
+      if (frameScope || window !== window.top || location.href !== expectedHref) {
+        throw new Error('Computed styles require the verified main document');
+      }
+      const el = resolveRef(spec);
+      if (el.getRootNode() !== document) throw new Error('Not a main-document inspection target');
+      const computed = getComputedStyle(el);
+      const properties = [
+        'font-family', 'font-size', 'font-weight', 'line-height', 'color', 'background-color',
+        'display', 'position', 'box-sizing', 'width', 'height',
+        'margin-top', 'margin-right', 'margin-bottom', 'margin-left',
+        'padding-top', 'padding-right', 'padding-bottom', 'padding-left', 'gap',
+      ];
+      return ok({ styles: Object.fromEntries(properties.map(property => [property, computed.getPropertyValue(property).slice(0, 1024)])) });
     }
     if (operation === 'scope' && owner) return ok(true);
     if (operation === 'click') {

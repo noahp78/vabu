@@ -21,6 +21,7 @@ The packagers accept one optional output directory. Its parent must exist and th
 | `extension/firefox/` | Firefox manifest, background script and generated-content entry point |
 | `extension/shared/` | Browser-neutral page operations, popup and icons |
 | `extension/stage.mjs` | Explicit build inventory and destination handling |
+| `docs/browser-instructions.md` | Source for the guide packaged as `shared/browser-instructions.md` in both builds |
 | `tests/` | Node tests, browser mocks and isolated live fixtures |
 
 ## Release artifacts
@@ -39,4 +40,4 @@ For Firefox, load the staged manifest temporarily in a disposable Developer Edit
 
 The native host accepts only the browser-specific extension identity registered by the installer. Keep the Unix socket inside the private runtime directory, verify ownership and modes, and do not put it on a TCP port.
 
-Page operations run against the selected document and must revalidate its tab, origin, identity and permission when a navigation or concurrent browser change could invalidate them. Do not replace an exact document check with tab or frame ID alone. Browser-specific injection and debugger calls should expose only narrow operations, not raw JavaScript or CDP. Privileged capabilities must not adopt tabs that the current bridge/workspace did not open. A screenshot is a separate capability from frame DOM access: it can contain visible cross-origin pixels even when the frame cannot be inspected.
+Page operations run against the selected document and must revalidate its tab, origin, identity and permission when a navigation or concurrent browser change could invalidate them. Do not replace an exact document check with tab or frame ID alone. Browser-specific injection and debugger calls should expose narrow operations, not arbitrary CDP. The explicit `eval` command is limited to verified VABU-opened documents in the workspace’s managed groups, subject to the profile’s JavaScript setting and the page’s policy. Privileged capabilities must not adopt tabs that the current bridge/workspace did not open. Keep results bounded and treat page content, logs, and captures as untrusted and potentially sensitive. A screenshot is a separate capability from frame DOM access: it can contain visible cross-origin pixels even when the frame cannot be inspected.

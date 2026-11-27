@@ -3,11 +3,15 @@ import test from 'node:test';
 import { runInNewContext } from 'node:vm';
 import { frameTextInPage } from '../extension/shared/frame-probes.mjs';
 
-const event = () => ({ addListener(fn) { this.fire = fn; } });
+const event = () => {
+  const listeners = [];
+  return { addListener: fn => listeners.push(fn),
+    fire(...args) { let result; for (const fn of listeners) result = fn(...args); return result; } };
+};
 const origin = 'http://127.0.0.1:8080';
 const childOrigin = 'http://127.0.0.2:8081';
 
-test('Chrome frame reads, viewport captures and dialogs stay within the verified owned selection', async () => {
+test('Chrome frame reads, viewport captures and dialogs stay within the verified owned selection', async (t) => {
   const port = { onMessage: event(), onDisconnect: event(), disconnect() {}, postMessage(message) {
     if (message.type === 'configure') queueMicrotask(() => this.onMessage.fire({ ready: true, socketName: 'chrome-default' }));
     else this.reply = message;
@@ -19,6 +23,9 @@ test('Chrome frame reads, viewport captures and dialogs stay within the verified
   const child = { ...topFrame, frameId: 8, frameType: 'sub_frame', parentFrameId: 0, parentDocumentId: 'top',
     documentId: 'child', url: `${childOrigin}/private-path?secret=value` };
   let childAllowed = true;
+  let rootAllowed = true, styleCalls = 0, afterStyle, evalCalls = 0, onEval, onGroupQuery;
+  const groups = new Map();
+  const stored = {};
   let probeCount = 0;
   let onRead;
   let onProbe;
@@ -34,22 +41,35 @@ test('Chrome frame reads, viewport captures and dialogs stay within the verified
   globalThis.chrome = {
     windows: { async getLastFocused() { return { id: 1, type: 'normal' }; } },
     runtime: { id: 'ext', getURL: () => 'popup', onMessage: event(), onConnect: event(), connectNative: () => port },
-    storage: { local: { async get() { return {}; } }, session: { async set() {} } },
+    storage: { local: { async get() { return { ...stored }; }, async set(values) { Object.assign(stored, values); } }, session: { async set() {} } },
     action: { async setBadgeText() {}, async setIcon() {} },
     permissions: { onRemoved: event(), async contains({ origins }) {
-      return childAllowed || origins[0] === 'http://127.0.0.1/*';
+      return origins[0] === 'http://127.0.0.1/*' ? rootAllowed : childAllowed;
     } },
     debugger: { onDetach: event(), onEvent: event(), async attach() {}, async detach() {}, async sendCommand(...args) {
       cdpCalls.push(args);
       return onCdp?.(...args);
     } },
-    tabs: { onRemoved: event(), onUpdated: event(), async get(id) { return tabs.get(id); }, async group() { return 1; },
+    tabs: { onRemoved: event(), onUpdated: event(), async get(id) { return tabs.get(id); },
+      async group({ groupId, tabIds, createProperties }) {
+        if (groupId === undefined) {
+          groupId = groups.size + 1;
+          groups.set(groupId, { id: groupId, windowId: createProperties.windowId });
+        }
+        for (const id of tabIds) tabs.get(id).groupId = groupId;
+        return groupId;
+      },
       async query(options) {
+        if ('groupId' in options) {
+          const snapshot = [...tabs.values()].filter(tab => tab.groupId === options.groupId).map(tab => ({ ...tab }));
+          await onGroupQuery?.();
+          return snapshot;
+        }
         assert.deepEqual(options, { active: true, currentWindow: true });
         return [...tabs.values()].filter(tab => tab.active);
       },
-      async create({ url }) { const tab = { url, id: tabs.size + 1, status: 'complete' }; tabs.set(tab.id, tab); return tab; } },
-    tabGroups: { async update() {} },
+      async create({ url, windowId }) { const tab = { url, windowId, id: tabs.size + 1, status: 'complete' }; tabs.set(tab.id, tab); return tab; } },
+    tabGroups: { async get(id) { return groups.get(id); }, async update(id, values) { Object.assign(groups.get(id), values); } },
     webNavigation: {
       onBeforeNavigate: event(), onCommitted: event(), onHistoryStateUpdated: event(), onReferenceFragmentUpdated: event(), onErrorOccurred: event(),
       async getFrame({ tabId, frameId }) {
@@ -88,8 +108,27 @@ test('Chrome frame reads, viewport captures and dialogs stay within the verified
         feedbackToken = args[1];
         return [{ documentId: topFrame.documentId, frameId: 0, result: true }];
       }
+      if (func.name === 'evalInPage') {
+        assert.deepEqual(target, { tabId: 2, documentIds: [topFrame.documentId] });
+        assert.equal(world, 'MAIN');
+        assert.deepEqual(args, [origin, tabs.get(2).url, '1 + 1', 16384]);
+        evalCalls++;
+        await onEval?.();
+        return [{ documentId: topFrame.documentId, frameId: 0, result: '2' }];
+      }
       if (func.name === 'inspectionPage') {
-        const [, , operation, spec, urls] = args;
+        const [, , operation, spec, urls, styleHref] = args;
+        if (operation === 'styles') {
+          assert.deepEqual(target, { tabId: 2, documentIds: [topFrame.documentId] });
+          assert.equal(spec, ref);
+          assert.equal(urls, null);
+          assert.equal(styleHref, tabs.get(2).url);
+          assert.equal(world, 'ISOLATED');
+          styleCalls++;
+          afterStyle?.();
+          return [{ documentId: target.documentIds[0], frameId: 0,
+            result: { ok: true, value: { styles: { color: 'rgb(0, 0, 0)' } } } }];
+        }
         assert.deepEqual(target, { tabId: 2, documentIds: [child.documentId] });
         assert.deepEqual(urls, { parentHref: tabs.get(2).url, href: child.url });
         assert.equal(world, 'ISOLATED');
@@ -120,7 +159,11 @@ test('Chrome frame reads, viewport captures and dialogs stay within the verified
     const submitExisting = () => send({ action: 'feedback-submit', token: feedbackToken,
       points: [{ note: 'Existing tab', target: null }] }, sender);
     assert.deepEqual(await submitExisting(), { ok: true });
+    assert.equal((await action('status')).feedbackCount, 1);
+    assert.equal(chrome.runtime.onMessage.fire({ action: 'feedback-list' }, { ...popupSender, tab: existing }, assert.fail), false);
+    assert.deepEqual(await action('feedback-list'), { total: 1, feedback: [{ page: existing.url, target: null, note: 'Existing tab', workspace: null }] });
     assert.deepEqual((await run('feedback')).value, { feedback: [{ page: existing.url, target: null, note: 'Existing tab' }] });
+    assert.equal((await action('status')).feedbackCount, 0);
     assert.deepEqual(await action('feedback-start'), { ok: true });
     chrome.webNavigation.onHistoryStateUpdated.fire({ tabId: 1, frameId: 0 });
     assert.match((await submitExisting()).error, /current active document/);
@@ -135,11 +178,111 @@ test('Chrome frame reads, viewport captures and dialogs stay within the verified
     assert.match((await run('frame-read', 'arbitrary')).error, /opened by VABU/);
     assert.match((await run('screenshot')).error, /opened by VABU/);
     assert.match((await run('inspect-dialog', 'show')).error, /opened by VABU/);
+    assert.match((await run('get', 'styles', ref)).error, /opened by VABU/);
+    assert.match((await run('eval', '1 + 1')).error, /opened by VABU/);
     assert.equal(cdpCalls.filter(([, method]) => method !== 'Page.enable').length, 0);
     const { sessionId } = (await run('session-start', 'Testing')).value;
     const scoped = (...args) => run('--session', sessionId, ...args);
-    const { tab } = (await scoped('open', `${origin}/owned`)).value;
+    const { tab, group } = (await scoped('open', `${origin}/owned`)).value;
     assert.equal((await scoped('use', String(tab))).value.tab, tab);
+    const readStyle = () => scoped('get', 'styles', ref);
+    const evaluate = () => scoped('eval', '1 + 1');
+    const setMode = evalMode => send({ action: 'set-eval-mode', evalMode });
+    assert.deepEqual((await readStyle()).value, { styles: { color: 'rgb(0, 0, 0)' } });
+    assert.match((await run('get', 'styles', ref)).error, /Select a tab for this VABU session/);
+    assert.match((await run('eval', '1 + 1')).error, /Select a tab for this VABU session/);
+    assert.equal((await action('status')).evalMode, 'ask');
+    assert.equal((await send({ action: 'status' }, { url: 'popup' })).evalMode, undefined);
+    assert.equal(chrome.runtime.onMessage.fire({ action: 'set-eval-mode', evalMode: 'allow' },
+      { ...popupSender, tab: existing }, assert.fail), false);
+    assert.match((await setMode('invalid')).error, /Invalid eval mode/);
+    assert.match((await evaluate()).error, /Open the VABU popup/);
+    const { token } = (await action('status')).evalApproval;
+    assert.deepEqual(await setMode('off'), { ok: true });
+    assert.equal((await action('status')).evalApproval, undefined);
+    assert.match((await send({ action: 'eval-approve', token })).error, /stale/);
+    assert.match((await evaluate()).error, /Eval is off/);
+    assert.deepEqual(await setMode('allow'), { ok: true });
+    assert.equal((await evaluate()).value, 2);
+    const target = tabs.get(tab);
+    const denyBoth = async () => {
+      assert.match((await readStyle()).error, /VABU-managed group/);
+      assert.match((await evaluate()).error, /Cannot verify|VABU-managed group/);
+    };
+    target.groupId = -1;
+    await denyBoth();
+    target.groupId = group;
+    target.windowId = 2;
+    await denyBoth();
+    target.windowId = 1;
+    Object.assign(existing, { windowId: 1, groupId: group });
+    await denyBoth();
+    delete existing.groupId;
+    const { sessionId: foreign } = (await run('session-start', 'Foreign')).value;
+    const { tab: foreignTab, group: foreignGroup } = (await run('--session', foreign, 'open', `${origin}/other`)).value;
+    tabs.get(foreignTab).groupId = group;
+    await denyBoth();
+    tabs.get(foreignTab).groupId = foreignGroup;
+    const tabGroups = chrome.tabGroups;
+    delete chrome.tabGroups;
+    await denyBoth();
+    chrome.tabGroups = tabGroups;
+    assert.equal(evalCalls, 1);
+    rootAllowed = false;
+    assert.match((await readStyle()).error, /no longer authorized/);
+    assert.equal(styleCalls, 1);
+    rootAllowed = true;
+
+    // The tab query has already snapshotted membership when these events arrive.
+    onGroupQuery = () => {
+      tabs.get(foreignTab).groupId = group;
+      chrome.tabs.onUpdated.fire(foreignTab, { groupId: group });
+    };
+    assert.match((await evaluate()).error, /Cannot verify/);
+    assert.equal(evalCalls, 1);
+    tabs.get(foreignTab).groupId = foreignGroup;
+    let queries = 0;
+    onGroupQuery = () => {
+      if (++queries !== 3) return; // Last verification, after styles have been read.
+      target.groupId = -1;
+      chrome.tabs.onUpdated.fire(tab, { groupId: -1 });
+    };
+    const staleStyles = await readStyle();
+    assert.match(staleStyles.error, /VABU-managed group/);
+    assert.equal(staleStyles.value, undefined);
+    assert.equal(styleCalls, 2);
+    target.groupId = group;
+
+    // Ordinary unrelated tab updates do not invalidate a grouped evaluation.
+    onGroupQuery = () => chrome.tabs.onUpdated.fire(foreignTab, { title: 'Unrelated', status: 'complete' });
+    assert.equal((await evaluate()).value, 2);
+    onGroupQuery = undefined;
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    try {
+      const dispatch = Promise.withResolvers(), completion = Promise.withResolvers();
+      onEval = () => { dispatch.resolve(); return completion.promise; };
+      const stalled = evaluate();
+      await dispatch.promise;
+      assert.match((await scoped('session-status')).error, /Another command is running/);
+      t.mock.timers.tick(5000);
+      const timedOut = await stalled;
+      assert.match(timedOut.error, /Eval timed out; it may have run/);
+      assert.equal(timedOut.value, undefined);
+      assert.equal((await scoped('session-status')).value.tab, tab);
+      onEval = undefined;
+      completion.resolve();
+      await new Promise(resolve => setImmediate(resolve));
+      assert.equal(evalCalls, 3); // Late browser completion does not replay or reply.
+      assert.equal(port.reply.value.tab, tab);
+      assert.equal((await evaluate()).value, 2);
+    } finally {
+      t.mock.timers.reset();
+    }
+    afterStyle = () => chrome.webNavigation.onHistoryStateUpdated.fire({ tabId: tab, frameId: 0 });
+    const changed = await readStyle();
+    assert.match(changed.error, /selection expired/);
+    assert.equal(changed.value, undefined);
+    afterStyle = undefined;
     const discover = async () => {
       const { value } = await scoped('frame-list');
       assert.equal(value?.length, 1);

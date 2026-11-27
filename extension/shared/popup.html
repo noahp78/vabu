@@ -9,15 +9,10 @@
 <body>
   <main>
     <header class="header">
-      <img src="icons/vabu-48.png" width="48" height="48" alt="">
+      <img src="icons/vabu.svg" width="48" height="48" alt="">
       <div><p class="eyebrow">LOCAL BROWSER CONTROL</p><h1>VABU</h1></div>
+      <button id="settings-toggle" type="button" aria-controls="settings-view" aria-expanded="false">Settings</button>
     </header>
-
-    <section class="card" aria-labelledby="bridge-heading">
-      <div class="heading-row"><h2 id="bridge-heading">Local bridge</h2><span id="bridge-state" class="badge" data-state="offline">Checking</span></div>
-      <p id="status" role="status">Checking…</p>
-      <button id="bridge" class="primary" type="button" disabled>Start local bridge</button>
-    </section>
 
     <section id="approval" class="card approval" aria-labelledby="approval-heading" hidden>
       <h2 id="approval-heading">Tab control request</h2>
@@ -27,32 +22,78 @@
     </section>
     <p id="approval-status" role="status"></p>
 
-    <section class="card" aria-labelledby="feedback-heading">
-      <h2 id="feedback-heading">Page feedback</h2>
-      <p>Leave comments on the active, selected VABU tab.</p>
-      <button id="feedback" type="button" disabled>Annotate page</button>
-      <p id="feedback-status" role="status"></p>
+    <section id="eval-approval" class="card" aria-labelledby="eval-heading" hidden>
+      <h2 id="eval-heading">JavaScript request</h2>
+      <p>Run the code below on <code id="eval-origin"></code>? It can read or change the page as you.</p>
+      <pre id="eval-expression" tabindex="0" aria-label="Requested JavaScript"></pre>
+      <div class="actions"><button id="eval-deny" type="button">Deny</button><button id="eval-allow" class="primary" type="button">Allow once</button></div>
     </section>
+    <p id="eval-status" class="hint" role="status"></p>
 
-    <section id="screenshots" class="card" aria-labelledby="screenshots-heading" hidden>
-      <h2 id="screenshots-heading">Firefox screenshots</h2>
-      <p>Requires all-sites access. Captures only VABU tabs, including visible iframes.</p>
-      <button id="screenshot-permission" type="button" disabled>Enable screenshots</button>
-      <p id="screenshot-status" role="status"></p>
-    </section>
+    <div id="home-view">
+      <section class="card" aria-labelledby="bridge-heading">
+        <div class="heading-row">
+          <h2 id="bridge-heading">Local bridge</h2>
+          <span id="bridge-state" class="badge" data-state="offline">Checking</span>
+          <button id="bridge-socket" class="badge" data-state="online" type="button" hidden disabled></button>
+        </div>
+        <p id="status" role="status">Checking…</p>
+        <p id="bridge-copy-status" class="hint" role="status"></p>
+        <button id="bridge" type="button" disabled>Start local bridge</button>
+      </section>
 
-    <section class="card" aria-labelledby="settings-heading">
-      <h2 id="settings-heading">Profile settings</h2>
-      <p>Socket: <button class="copy-value" id="copy-socket" type="button" title="Copy socket name" disabled><code id="effective-socket">Checking…</code></button></p>
-      <p id="cli-hint" hidden>CLI: <button class="copy-value" id="copy-cli" type="button" title="Copy CLI command"><code id="cli-command"></code></button></p>
-      <p class="hint" id="copy-status" role="status"></p>
-      <form id="socket-form">
-        <label for="socket">Custom socket name <span class="optional">(optional)</span></label>
-        <div class="socket-row"><input id="socket" name="socket" type="text" spellcheck="false" autocapitalize="off" aria-describedby="socket-hint socket-status" disabled><button id="socket-save" type="submit" disabled>Save</button></div>
-        <p class="hint" id="socket-hint">Stop the bridge to edit. Use a unique name per profile, or leave blank for the default.</p>
-        <p id="socket-status" role="status"></p>
-      </form>
-    </section>
+      <section class="card" aria-labelledby="feedback-heading">
+        <h2 id="feedback-heading">Page feedback</h2>
+        <p>Add comments to this page, then send them to the local VABU inbox.</p>
+        <button id="feedback" class="primary" type="button" disabled>Annotate page</button>
+        <p id="feedback-status" role="status"></p>
+        <details id="feedback-inbox" hidden>
+          <summary id="feedback-count">View sent annotations</summary>
+          <p id="feedback-inbox-status" class="hint" role="status"></p>
+          <ol id="feedback-notes" aria-label="Sent annotations"></ol>
+          <button id="feedback-recall" type="button" disabled>Recall latest batch as drafts</button>
+        </details>
+      </section>
+    </div>
+
+    <div id="settings-view" hidden>
+      <section class="card" aria-labelledby="settings-heading">
+        <h2 id="settings-heading">Profile settings</h2>
+        <p>Socket: <button class="copy-value" id="copy-socket" type="button" title="Copy socket name" disabled><code id="effective-socket">Checking…</code></button></p>
+        <p id="cli-hint" hidden>CLI: <button class="copy-value" id="copy-cli" type="button" title="Copy CLI command"><code id="cli-command"></code></button></p>
+        <p class="hint" id="copy-status" role="status"></p>
+        <form id="socket-form">
+          <label for="socket">Custom socket name <span class="optional">(optional)</span></label>
+          <div class="socket-row"><input id="socket" name="socket" type="text" spellcheck="false" autocapitalize="off" aria-describedby="socket-hint socket-status" disabled><button id="socket-save" type="submit" disabled>Save</button></div>
+          <p class="hint" id="socket-hint">To edit the name, go back and stop the bridge. Use a unique name per profile, or leave blank for the default.</p>
+          <p id="socket-status" role="status"></p>
+        </form>
+      </section>
+
+      <section class="card" aria-labelledby="eval-settings-heading">
+        <h2 id="eval-settings-heading">JavaScript execution</h2>
+        <form id="eval-settings-form">
+          <label for="eval-mode">When VABU requests JavaScript execution</label>
+          <div class="socket-row">
+            <select id="eval-mode" aria-describedby="eval-settings-hint eval-settings-status" disabled>
+              <option value="off">Disabled</option>
+              <option value="ask" selected>Ask every time</option>
+              <option value="allow">Allow without asking</option>
+            </select>
+            <button id="eval-mode-save" type="submit" disabled>Save</button>
+          </div>
+          <p id="eval-settings-hint" class="hint">Only tabs VABU opened in its own tab groups are eligible. Without asking, code can read or change those pages as you.</p>
+          <p id="eval-settings-status" class="hint" role="status"></p>
+        </form>
+      </section>
+
+      <section id="screenshots" class="card" aria-labelledby="screenshots-heading" hidden>
+        <h2 id="screenshots-heading">Firefox screenshots</h2>
+        <p>Requires all-sites access. Captures only VABU tabs, including visible iframes.</p>
+        <button id="screenshot-permission" type="button" disabled>Enable screenshots</button>
+        <p id="screenshot-status" role="status"></p>
+      </section>
+    </div>
   </main>
   <script type="module" src="popup.js"></script>
 </body>

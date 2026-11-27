@@ -8,6 +8,9 @@ body { margin: 0; width: 360px; }
 main { padding: 14px; }
 .header { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
 .header img { border-radius: 12px; }
+#settings-toggle { margin-inline-start: auto; }
+#home-view, #settings-view { display: grid; gap: 8px; }
+#home-view > .card, #settings-view > .card { margin: 0; }
 h1, h2, p { margin: 0; }
 h1 { font-size: 22px; line-height: 1.2; letter-spacing: -.03em; }
 h2 { font-size: 15px; line-height: 1.3; }
@@ -18,29 +21,56 @@ h2 { font-size: 15px; line-height: 1.3; }
 .heading-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
 .badge { border-radius: 999px; padding: 3px 9px; font-size: 11px; font-weight: 700; background: #ece8f2; color: #554c64; }
 .badge[data-state="online"] { background: #d9f7e7; color: #075b36; }
+#bridge-socket { appearance: none; align-items: center; justify-content: center; display: inline-flex;
+  border-color: transparent; min-inline-size: 0; min-block-size: 24px; line-height: 1.25;
+  text-align: center; overflow-wrap: anywhere; }
+#bridge-socket:hover:not(:disabled) { border-color: currentColor; }
 .badge[data-state="error"] { background: #ffe3e3; color: #942d2d; }
-button, input { font: inherit; border-radius: 8px; border: 1px solid #bcb3cd; padding: 6px 12px; }
+button, input, select { font: inherit; border-radius: 8px; border: 1px solid #bcb3cd; padding: 6px 12px; }
 button { cursor: pointer; color: inherit; background: #fff; font-weight: 650; }
 button:hover:not(:disabled) { border-color: #6840bb; }
 button:disabled { opacity: .6; cursor: not-allowed; }
-button:focus-visible, input:focus-visible { outline: 3px solid #9b7aef; outline-offset: 2px; }
+button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px solid #9b7aef; outline-offset: 2px; }
 .primary { background: #5b21b6; border-color: #5b21b6; color: white; }
 .primary:hover:not(:disabled) { background: #4c1d95; }
-#bridge { width: 100%; margin-top: 8px; }
+#feedback, #feedback-recall, #bridge { width: 100%; margin-top: 8px; }
+#feedback-status:empty, #feedback-inbox-status:empty { margin: 0; }
+#feedback-inbox { margin-top: 10px; border-top: 1px solid #ded8ea; padding-top: 8px; }
+#feedback-count { cursor: pointer; font-weight: 700; }
+#feedback-count:focus-visible { outline: 3px solid #9b7aef; outline-offset: 2px; }
+#feedback-notes { margin: 0; padding-inline-start: 24px; max-height: 12em; overflow: auto; }
+#feedback-notes li { margin-block: 6px; overflow-wrap: anywhere; }
+#feedback-notes .note { white-space: pre-wrap; }
 #screenshot-permission { margin-top: 8px; }
 .actions, .socket-row { display: flex; gap: 8px; margin-top: 6px; }
 .actions button { flex: 1; }
 label { display: block; font-weight: 700; margin-top: 10px; }
 .optional, .hint { font-size: 12px; font-weight: 400; }
-.socket-row input { min-width: 0; width: 100%; background: transparent; color: inherit; }
-#approval-target { overflow-wrap: anywhere; font-weight: 700; }
+.socket-row :is(input, select) { min-width: 0; width: 100%; background-color: transparent; color: inherit; }
+#eval-mode {
+  appearance: none;
+  padding-inline-end: 32px;
+  background: linear-gradient(45deg, transparent 50%, currentColor 50%) right 17px center / 5px 5px no-repeat,
+    linear-gradient(135deg, currentColor 50%, transparent 50%) right 12px center / 5px 5px no-repeat;
+}
+/* Keep the native menu readable independently of the closed control. */
+#eval-mode option { background-color: Field; color: FieldText; }
+@media (forced-colors: active) {
+  #eval-mode { appearance: auto; background-image: none; }
+}
+#eval-settings-status:empty { margin: 0; }
+#approval-target, #eval-origin { overflow-wrap: anywhere; font-weight: 700; }
+#eval-expression { margin: 8px 0; max-block-size: 10em; overflow: auto; white-space: pre-wrap;
+  overflow-wrap: anywhere; background: Canvas; color: CanvasText; border: 1px solid GrayText; border-radius: 8px; padding: 8px; }
+#eval-status:not(:empty) { margin-bottom: 8px; }
 .copy-value { display: block; width: 100%; margin-top: 4px; padding: 4px 8px; text-align: left; overflow-wrap: anywhere; }
-#copy-status:empty { margin: 0; }
+#copy-status:empty, #bridge-copy-status:empty { margin: 0; }
 #approval-status:not(:empty), #socket-status:not(:empty) { margin: 8px 0; }
 [hidden] { display: none !important; }
 @media (prefers-color-scheme: dark) {
   :root { color: #f3efff; background: #181420; }
   .card { background: #262031; border-color: #493d5a; }
+  #feedback-inbox { border-color: #493d5a; }
   .card p { color: #d3cadd; }
   .eyebrow { color: #c4b5fd; }
   button { background: #342b42; color: #fff; border-color: #78698a; }

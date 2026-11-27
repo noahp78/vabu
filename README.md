@@ -6,7 +6,8 @@ VABU connects a local CLI to Chrome, Chromium or Firefox. Open and inspect tabs,
 
 1. Follow the [installation guide](docs/installation.md) to load the extension and register the native host on Linux or macOS.
 2. Open the VABU popup to check the connection. On Firefox, click **Start local bridge**.
-3. From the checkout, run `node cli.mjs status` for Chrome or `node cli.mjs --socket firefox-default status` for Firefox. The popup shows the command for your profile.
+3. From the checkout, run `node cli.mjs status` for Chrome or `node cli.mjs --socket firefox-default status` for Firefox. The popup’s **Settings** view shows the command for your profile.
+4. Run `vabu --socket NAME instructions` for guidance from the loaded extension. `vabu help` lists CLI options without a browser connection.
 
 Only select pages you want the CLI to access. Other processes running as your OS user can access a running bridge. Stop it from the popup when you are finished.
 

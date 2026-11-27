@@ -1,14 +1,18 @@
 import { domainPattern, hasHostAccess, webUrl } from '../shared/domains.js';
-import { setBridgeIcon } from '../shared/toolbar.mjs';
+import { isToolbarPopup, setBridgeIcon } from '../shared/toolbar.mjs';
 import { defaultSocketNames, socketNameError, validSocketName } from '../shared/socket-name.mjs';
 import { commands as interaction } from '../shared/interaction.mjs';
-import { commands as inspection, isFrameInspection, runListedFrameInspection } from '../shared/inspection.mjs';
+import { commands as inspection, inspectionPage, isFrameInspection, runListedFrameInspection, getStyles } from '../shared/inspection.mjs';
 import { commands as scoped } from '../shared/scoped-snapshot.mjs';
 import { commands as find } from '../shared/find-click.mjs';
 import { commands as wait } from '../shared/wait.mjs';
 import { commands as get } from '../shared/get-element.mjs';
 import { captureOptions, captureResponse, validateCapture } from '../shared/capture-jpeg.mjs';
-import { handleFeedback, invalidateFeedback, takeFeedback } from '../shared/feedback.mjs';
+import { feedbackCount, handleFeedback, invalidateFeedback, listFeedback, takeFeedback } from '../shared/feedback.mjs';
+import { forgetWorkspaceWindow, manageOwnedTab, openBackgroundTab, watchManagedGroup } from '../shared/tab-lifecycle.mjs';
+import { browserInstructions } from '../shared/browser-instructions.mjs';
+import { createEvalApproval } from '../shared/eval.mjs';
+import { navigationTiming } from '../shared/navigation-timing.mjs';
 import { createFirefoxFrameScope, hasDocumentId, hasFrameApis, injectDocument, navigationEvents, unavailable } from './frame-read.mjs';
 
 const browser = globalThis.browser;
@@ -17,10 +21,14 @@ let bridge;
 let bridgeError;
 let bridgeTransition = Promise.resolve();
 let selected;
+const evalApproval = createEvalApproval(browser);
+const managedGroup = watchManagedGroup(browser);
 
 function release(s = selected) {
   if (!s || s !== selected) return;
   selected = undefined;
+  managedGroup.clear();
+  evalApproval.clear(s);
   s.port?.disconnect();
   s.pending?.reject(new Error('Selected document changed or was released'));
 }
@@ -82,12 +90,22 @@ async function storedSocketName() {
 }
 
 browser.runtime.onMessage.addListener((message, sender) => {
-  if (['feedback-start', 'feedback-submit'].includes(message?.action)) {
+  if (['feedback-start', 'feedback-recall', 'feedback-submit'].includes(message?.action)) {
     const connection = bridge;
     return handleFeedback(browser, connection, () => bridge, id =>
       [...connection.workspaces.values()].find(workspace => workspace.ownedTabs.has(id)) ?? connection,
     message, sender)
       .catch(error => ({ error: error.message }));
+  }
+  if (message?.action === 'feedback-list') {
+    if (!isToolbarPopup(browser.runtime, sender)) return false;
+    return Promise.resolve(listFeedback(bridge));
+  }
+  if (['eval-approve', 'eval-deny', 'set-eval-mode'].includes(message?.action)) {
+    if (!isToolbarPopup(browser.runtime, sender)) return false;
+    const result = message.action === 'set-eval-mode' ? evalApproval.setMode(message.evalMode)
+      : evalApproval.decide(message.action, message.token);
+    return result.catch(error => ({ error: error.message }));
   }
   if (sender.url !== browser.runtime.getURL('shared/popup.html') || !['status', 'start', 'stop', 'set-socket'].includes(message?.action)) return false;
   // Serialize setting writes and launches, but let Stop cancel the native handshake.
@@ -97,7 +115,8 @@ browser.runtime.onMessage.addListener((message, sender) => {
       const socketOverride = validSocketName(saved) ? saved : null;
       return { browser: 'firefox', connected: bridge?.online === true, starting: !!bridge && !bridge.online,
         socketName: bridge?.socketName ?? socketOverride ?? defaultSocketName, socketOverride,
-        bridgeError: bridgeError ?? (saved === socketOverride ? undefined : invalidSavedSocketName) };
+        bridgeError: bridgeError ?? (saved === socketOverride ? undefined : invalidSavedSocketName),
+        ...(isToolbarPopup(browser.runtime, sender) ? { ...await evalApproval.status(), feedbackCount: feedbackCount(bridge) } : {}) };
     }
     if (message.action === 'set-socket') {
       if (bridge) throw new Error('Stop the local bridge before changing its socket name');
@@ -131,6 +150,7 @@ browser.runtime.onMessage.addListener((message, sender) => {
   }).catch((error) => ({ error: error.message }));
 });
 
+browser.windows?.onRemoved?.addListener((id) => forgetWorkspaceWindow(bridge, id));
 browser.tabs.onRemoved.addListener((id) => {
   invalidateFeedback(bridge, id);
   if (id === selected?.id) release();
@@ -144,7 +164,7 @@ browser.tabs.onUpdated.addListener((id, change) => {
 });
 browser.permissions.onRemoved.addListener(({ origins, permissions }) => {
   if (origins?.length || permissions?.some(permission => ['scripting', 'webNavigation'].includes(permission))) {
-    if (bridge) delete bridge.feedbackLease;
+    invalidateFeedback(bridge);
     release();
   }
 });
@@ -205,7 +225,8 @@ async function select(connection, id, workspace) {
   if (!url || tab.status === 'loading') throw new Error('Firefox has not granted access to a loaded HTTP(S) document in this tab');
   if (bridge !== connection) throw new Error('Bridge stopped');
   release();
-  const s = selected = { id, workspace, href: url.href, origin: url.origin };
+  const s = selected = { id, workspace, href: url.href, origin: url.origin, key: crypto.randomUUID(),
+    windowId: tab.windowId, groupId: tab.groupId };
   try {
     const frame = frameApis && (workspace ?? connection).ownedTabs.has(id)
       && await browser.webNavigation.getFrame({ tabId: id, frameId: 0 });
@@ -226,7 +247,7 @@ async function select(connection, id, workspace) {
     port.onMessage.addListener(({ id, result }) => {
       if (id === s.pending?.id) s.pending.resolve(result);
     });
-    await page(s, 'init', s.href, s.origin, crypto.randomUUID());
+    await page(s, 'init', s.href, s.origin, s.key);
     return await current(s);
   } catch (error) {
     release(s);
@@ -331,10 +352,13 @@ async function runFrameCommand(connection, workspace, s, verb, terms, setBeforeR
   }
 }
 
-function ownedDocumentScope(connection, workspace, s, screenshot = false) {
+function ownedDocumentScope(connection, workspace, s, feature) {
+  const screenshot = feature === 'screenshots';
   const owner = workspace ?? connection;
   if (!s || !owner.ownedTabs.has(s.id)) throw new Error('Select a tab opened by VABU in this bridge and workspace first');
-  if (!frameApis || !s.documentId) throw new Error('Firefox screenshots require verified document IDs (Firefox 153+)');
+  if (!frameApis || !s.documentId) {
+    throw new Error(`Firefox ${feature} require verified document IDs (Firefox 153+)`);
+  }
   const { id, documentId, href, origin } = s;
   const changed = () => new Error('Cannot verify the selected Firefox document; use the tab again');
   // Existing tab, root navigation, port and permission listeners permanently
@@ -364,12 +388,39 @@ function ownedDocumentScope(connection, workspace, s, screenshot = false) {
     assertCurrent();
     return info(tab, webUrl(href));
   };
-  return { id, documentId, href, owner, verify, assertCurrent };
+  return { id, documentId, href, origin, owner, verify, assertCurrent };
+}
+
+function groupedDocumentScope(connection, workspace, s, feature) {
+  const document = ownedDocumentScope(connection, workspace, s, feature);
+  const { owner } = document;
+  const group = managedGroup.pin(owner, s, id => owner.ownedTabs.has(id));
+  const assertCurrent = () => {
+    document.assertCurrent();
+    group.assertCurrent();
+  };
+  return { ...document, assertCurrent,
+    async verify() {
+      assertCurrent();
+      await document.verify();
+      await group.verify();
+      assertCurrent();
+    } };
+}
+
+function runStyles(connection, workspace, s, terms, setBeforeReply) {
+  const scope = groupedDocumentScope(connection, workspace, s, 'computed styles');
+  const { id, documentId, origin, href } = scope;
+  return getStyles(terms, { ...scope, run: (operation, ref) =>
+    injectDocument(browser, id, { documentId, frameId: 0 }, {
+      func: inspectionPage, args: [origin, s.key, operation, ref, null, href],
+    }),
+  }, setBeforeReply);
 }
 
 async function runCapture(connection, workspace, s, terms, setBeforeReply) {
   const options = captureOptions(terms);
-  const { id, documentId, verify, assertCurrent } = ownedDocumentScope(connection, workspace, s, true);
+  const { id, documentId, verify, assertCurrent } = ownedDocumentScope(connection, workspace, s, 'screenshots');
   await verify();
   assertCurrent();
   if (typeof browser.tabs.captureTab !== 'function') throw new Error('Firefox tab-ID capture is unavailable');
@@ -387,12 +438,19 @@ async function runCapture(connection, workspace, s, terms, setBeforeReply) {
 
 async function command(connection, args, setBeforeReply) {
   if (!Array.isArray(args) || !args.length || !args.every((arg) => typeof arg === 'string')) throw new Error('Invalid command');
+  const assertBridge = () => { if (bridge !== connection) throw new Error('Bridge stopped'); };
+  assertBridge();
   const named = args[0] === '--session';
   const id = named ? args[1] : undefined;
   const { workspaces } = connection;
   const workspace = workspaces.get(id);
   if (named && !workspace) throw new Error('Unknown VABU session ID');
   const [verb, ...terms] = named ? args.slice(2) : args;
+  if (verb === 'instructions') {
+    if (named || terms.length) throw new Error('instructions takes no arguments and cannot be scoped');
+    setBeforeReply(undefined, assertBridge);
+    return browserInstructions(browser.runtime, 'firefox', assertBridge);
+  }
   if (verb === 'feedback') return takeFeedback(workspace ?? connection, terms);
   if (!named && verb === 'session-start' && terms.length === 1) {
     const name = terms[0].trim();
@@ -425,17 +483,17 @@ async function command(connection, args, setBeforeReply) {
       return url && info(tab, url);
     }))).filter(Boolean);
   }
+  const owner = workspace ?? connection;
+  if (verb === 'tab-show' || verb === 'tab-close' || verb === 'tab-navigate') {
+    return manageOwnedTab(browser, verb, terms,
+      (tabId) => (!workspace || workspaces.get(id) === workspace) && owner.ownedTabs.has(tabId), assertBridge,
+      async (tabId) => { if (selected?.id === tabId) release(); });
+  }
   if (verb === 'open' && terms.length === 1) {
     const url = webUrl(terms[0]);
     if (!await hasHostAccess(browser.permissions, url)) throw new Error('Firefox has not granted access to this site');
-    const window = await browser.windows.getLastFocused({ windowTypes: ['normal'] }).catch(() => null);
-    if (bridge !== connection) throw new Error('Bridge stopped');
-    if (window?.type !== 'normal' || window.incognito || !Number.isInteger(window.id)) {
-      throw new Error('Open a normal Firefox window before opening a VABU background tab');
-    }
-    const tab = await browser.tabs.create({ windowId: window.id, url: url.href, active: false });
-    if (bridge !== connection) throw new Error('Bridge stopped');
-    const owner = workspace ?? connection;
+    const tab = await openBackgroundTab(browser, owner, url, assertBridge, 'Firefox');
+    assertBridge();
     owner.ownedTabs.add(tab.id);
     const group = await groupNewTab(owner, tab).catch((error) => {
       if (workspace) throw new Error(`Tab ${tab.id} opened, but grouping failed: ${error.message}`);
@@ -460,7 +518,37 @@ async function command(connection, args, setBeforeReply) {
   if (verb === 'frame-list' || verb === 'frame-read' || isFrameInspection(verb, terms)) {
     return runFrameCommand(connection, workspace, s, verb, terms, setBeforeReply);
   }
+  if (verb === 'url' || verb === 'tab-info') {
+    if (terms.length) throw new Error(`Usage: vabu ${verb}`);
+    const scope = s?.documentId ? ownedDocumentScope(connection, workspace, s, 'metadata') : null;
+    const verify = scope ? scope.verify : () => current(s);
+    const assertCurrent = scope ? scope.assertCurrent : () => {
+      if (bridge !== connection || selected !== s) throw new Error('Selected document changed or was released');
+    };
+    await verify();
+    const tab = await browser.tabs.get(s.id);
+    const checked = await verify();
+    assertCurrent();
+    const value = verb === 'url' ? s.href : { tab: checked.tab, origin: checked.origin, window: tab.windowId, active: checked.active };
+    setBeforeReply(verify, assertCurrent);
+    return value;
+  }
+  if (verb === 'js') {
+    if (terms.length !== 1 || terms[0] !== 'timing') throw new Error('Usage: vabu js timing');
+    const scope = ownedDocumentScope(connection, workspace, s, 'navigation timing');
+    await scope.verify();
+    const value = await injectDocument(browser, scope.id, { documentId: scope.documentId, frameId: 0 }, {
+      func: navigationTiming, args: [scope.href],
+    });
+    if (!value) throw new Error('Navigation timing unavailable for this document');
+    await scope.verify();
+    setBeforeReply(scope.verify, scope.assertCurrent);
+    return value;
+  }
+  if (verb === 'eval') return evalApproval.run(s, terms,
+    () => groupedDocumentScope(connection, workspace, s, 'eval expressions'), setBeforeReply);
   if (verb === 'screenshot') return runCapture(connection, workspace, s, terms, setBeforeReply);
+  if (verb === 'get' && terms[0] === 'styles') return runStyles(connection, workspace, s, terms.slice(1), setBeforeReply);
   const findTicket = verb === 'find' ? crypto.randomUUID() : undefined;
   const ctx = {
     origin: s?.origin,

@@ -1,6 +1,6 @@
 # Install and configure
 
-VABU supports Linux and macOS with Node.js 22 or newer. Chrome and Chromium require version 124 or newer. See [Firefox](firefox.md) for version and signing limits. The extension and CLI must come from the same build.
+VABU supports Linux and macOS with Node.js 22 or newer. Chrome and Chromium require version 124 or newer. See [Firefox](firefox.md) for version and signing limits. Use a matching release for initial installation. Browser instructions ship with the extension; new browser-side commands need no CLI or native-host update when the bridge protocol and any required client-side options are unchanged.
 
 ## Install from a release
 
@@ -30,7 +30,7 @@ The direct `install.mjs` command defaults to Google Chrome on macOS and Chromium
 
 For Firefox, run `node extension/firefox/package.mjs`, temporarily load `dist/firefox/manifest.json`, and register the bridge with `node install.mjs --firefox`. Firefox requires manual bridge startup. See the [Firefox guide](firefox.md).
 
-On Chrome, open VABU from the Extensions menu. The bridge starts automatically; use **Start local bridge** if the first attempt failed. **Stop local bridge** also suppresses automatic restart for the rest of the Chrome session. The optional Pi [skill](../SKILL.md) is not required for the CLI.
+On Chrome, open VABU from the Extensions menu. The bridge starts automatically; use **Start local bridge** if the first attempt failed. **Stop local bridge** also suppresses automatic restart for the rest of the Chrome session. The optional Pi [skill](../SKILL.md) is not required for the CLI. It fetches guidance from the loaded extension with `vabu --socket NAME instructions`; you do not need to reinstall it for each browser update. If a bridge does not recognize `instructions`, reload or update that profile’s extension.
 
 ## Upgrade or migrate an unpacked installation
 
@@ -48,7 +48,7 @@ When building from source at an already loaded path, close the browser, move the
 
 ## Use more than one browser or profile
 
-The popup shows the active socket name and CLI command. Chrome defaults to `chrome-default`; Firefox defaults to `firefox-default`. If you use more than one profile of the same browser, choose distinct names. Stop the bridge in that profile, edit and save the name, then restart. Clear the field to restore the default. Names are 1–32 lowercase ASCII letters, digits or hyphens, starting with a letter and ending with a letter or digit.
+When the bridge is online, its green badge in the VABU popup shows the active socket name. Click the badge to copy the name. Open **Settings** to see and copy the CLI command. Chrome defaults to `chrome-default`; Firefox defaults to `firefox-default`. If you use more than one profile of the same browser, choose distinct names. Stop the bridge on the main popup view, edit and save the name in **Settings**, then go back and start the bridge. Clear the field to restore the default. Names are 1–32 lowercase ASCII letters, digits or hyphens, starting with a letter and ending with a letter or digit.
 
 ```sh
 vabu status                                  # default Chrome socket
@@ -57,6 +57,8 @@ vabu --socket firefox-default status         # default Firefox socket
 ```
 
 Put `--socket NAME` before the command (and before `--session ID` if using a named session). Stopping the bridge releases the selection and invalidates its session IDs and references.
+
+In **Settings → JavaScript execution**, choose whether to disable `eval`, ask each time, or allow it without prompting on eligible VABU-created tabs that are still in their VABU group. This choice is saved per browser profile. Keep the default **Ask every time** if you do not want local callers to run code without explicit approval.
 
 ## Transport and troubleshooting
 

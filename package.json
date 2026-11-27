@@ -17,6 +17,7 @@
     "extension/chrome/",
     "extension/firefox/",
     "extension/shared/",
+    "docs/browser-instructions.md",
     "SKILL.md"
   ]
 }

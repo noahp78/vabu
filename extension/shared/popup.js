@@ -1,9 +1,22 @@
 import { defaultSocketNames, socketNameError, validSocketName } from './socket-name.mjs';
 
 const runtime = (globalThis.browser ?? globalThis.chrome).runtime;
+const homeView = document.querySelector('#home-view');
+const settingsView = document.querySelector('#settings-view');
+const settingsToggle = document.querySelector('#settings-toggle');
+
+settingsToggle.addEventListener('click', () => {
+  const showSettings = settingsView.hidden;
+  homeView.hidden = showSettings;
+  settingsView.hidden = !showSettings;
+  settingsToggle.textContent = showSettings ? 'Back' : 'Settings';
+  settingsToggle.setAttribute('aria-expanded', String(showSettings));
+});
 const status = document.querySelector('#status');
 const bridge = document.querySelector('#bridge');
 const bridgeState = document.querySelector('#bridge-state');
+const bridgeSocket = document.querySelector('#bridge-socket');
+const bridgeCopyStatus = document.querySelector('#bridge-copy-status');
 const effectiveSocket = document.querySelector('#effective-socket');
 const cliHint = document.querySelector('#cli-hint');
 const cliCommand = document.querySelector('#cli-command');
@@ -16,6 +29,26 @@ const socketStatus = document.querySelector('#socket-status');
 const socketSave = document.querySelector('#socket-save');
 const feedback = document.querySelector('#feedback');
 const feedbackStatus = document.querySelector('#feedback-status');
+const feedbackInbox = document.querySelector('#feedback-inbox');
+const feedbackCount = document.querySelector('#feedback-count');
+const feedbackInboxStatus = document.querySelector('#feedback-inbox-status');
+const feedbackNotes = document.querySelector('#feedback-notes');
+const recall = document.querySelector('#feedback-recall');
+let inboxCount = 0;
+let inboxRevision = 0;
+const evalApproval = document.querySelector('#eval-approval');
+const evalOrigin = document.querySelector('#eval-origin');
+const evalExpression = document.querySelector('#eval-expression');
+const evalStatus = document.querySelector('#eval-status');
+const evalAllow = document.querySelector('#eval-allow');
+const evalDeny = document.querySelector('#eval-deny');
+const evalSettingsForm = document.querySelector('#eval-settings-form');
+const evalMode = document.querySelector('#eval-mode');
+const evalModeSave = document.querySelector('#eval-mode-save');
+const evalSettingsStatus = document.querySelector('#eval-settings-status');
+let savedEvalMode = 'ask';
+let evalToken;
+let evalBusy = false;
 let feedbackBusy = false;
 let current;
 let savedSocket = '';
@@ -33,6 +66,11 @@ async function send(message) {
 function controls() {
   bridge.disabled = busy || !current;
   feedback.disabled = busy || feedbackBusy || !current?.connected;
+  recall.disabled = feedback.disabled || !inboxCount;
+  bridgeSocket.disabled = busy || bridgeSocket.hidden;
+  evalAllow.disabled = evalDeny.disabled = busy || evalBusy || !evalToken;
+  evalMode.disabled = busy || !current?.evalMode;
+  evalModeSave.disabled = evalMode.disabled || evalMode.value === savedEvalMode;
   copySocket.disabled = copyCli.disabled = busy || !current;
   socketInput.disabled = socketSave.disabled = busy || !current || current.connected || current.starting;
 }
@@ -44,14 +82,20 @@ async function update(message) {
   busy = !!message;
   if (busy) controls();
   let saved = false;
+  let evalSaved = false;
   if (message) {
-    bridgeActionError = undefined;
-    socketStatus.textContent = '';
+    if (message.action === 'set-eval-mode') evalSettingsStatus.textContent = '';
+    else {
+      bridgeActionError = undefined;
+      socketStatus.textContent = '';
+    }
     try {
       await send(message);
       saved = message.action === 'set-socket';
+      evalSaved = message.action === 'set-eval-mode';
     } catch (error) {
       if (message.action === 'set-socket') socketStatus.textContent = error.message;
+      else if (message.action === 'set-eval-mode') evalSettingsStatus.textContent = error.message;
       else bridgeActionError = error.message;
     }
   }
@@ -60,6 +104,12 @@ async function update(message) {
     if (request !== revision) return;
     current = result;
     const { connected, starting, browser, socketName, socketOverride, bridgeError } = current;
+    showEvalApproval(connected ? current.evalApproval : undefined);
+    if (current.evalMode) {
+      if (evalSaved || !evalMode.value || evalMode.value === savedEvalMode) evalMode.value = current.evalMode;
+      savedEvalMode = current.evalMode;
+    }
+    updateFeedbackCount(connected ? current.feedbackCount ?? 0 : 0);
     effectiveSocket.textContent = socketName;
     cliCommand.textContent = `vabu --socket ${socketName} status`;
     cliHint.hidden = false;
@@ -73,10 +123,12 @@ async function update(message) {
     const error = bridgeError || bridgeActionError;
     bridge.textContent = connected || starting ? 'Stop local bridge' : 'Start local bridge';
     status.textContent = error || (connected ? 'Bridge is running.' : starting ? 'Bridge is starting…' : 'Bridge is stopped.');
-    setBadge(error ? 'error' : connected ? 'online' : 'offline');
+    setBadge(error ? 'error' : connected ? 'online' : 'offline', socketName);
   } catch (error) {
     if (request !== revision) return;
     current = undefined;
+    showEvalApproval();
+    updateFeedbackCount(0);
     effectiveSocket.textContent = 'Unavailable';
     cliHint.hidden = true;
     status.textContent = error.message;
@@ -90,20 +142,111 @@ async function update(message) {
   }
 }
 
-function setBadge(state) {
-  if (!bridgeState) return;
-  bridgeState.dataset.state = state;
-  bridgeState.textContent = { online: 'Online', offline: 'Offline', error: 'Error' }[state];
+function updateFeedbackCount(count) {
+  if (count === inboxCount) return;
+  inboxCount = count;
+  feedbackInbox.hidden = !count;
+  feedbackCount.textContent = count === 1 ? '1 sent annotation' : `${count} sent annotations`;
+  if (!count) {
+    feedbackInbox.open = false;
+    clearFeedbackPreview();
+  } else if (feedbackInbox.open) void showFeedbackPreview();
 }
 
-for (const [button, value, label] of [[copySocket, effectiveSocket, 'Socket name'], [copyCli, cliCommand, 'CLI command']]) {
+function clearFeedbackPreview() {
+  ++inboxRevision;
+  feedbackInboxStatus.textContent = '';
+  feedbackNotes.replaceChildren();
+}
+
+async function showFeedbackPreview() {
+  clearFeedbackPreview();
+  const revision = inboxRevision;
+  feedbackInboxStatus.textContent = 'Loading annotations…';
+  try {
+    const { feedback: notes, total } = await send({ action: 'feedback-list' });
+    if (revision !== inboxRevision || !feedbackInbox.open) return;
+    for (const { page, target, note, workspace } of notes) {
+      const item = document.createElement('li');
+      const context = document.createElement('p');
+      context.className = 'hint';
+      context.textContent = [workspace, page, target].filter(Boolean).join(' · ');
+      const content = document.createElement('p');
+      content.className = 'note';
+      content.textContent = note;
+      item.append(context, content);
+      feedbackNotes.append(item);
+    }
+    feedbackInboxStatus.textContent = total > notes.length ? `Showing ${notes.length} of ${total}. Use vabu feedback to retrieve the rest.`
+      : total ? '' : 'No sent annotations are waiting.';
+  } catch (error) {
+    if (revision === inboxRevision) feedbackInboxStatus.textContent = error.message;
+  }
+}
+
+feedbackInbox.addEventListener('toggle', () => {
+  if (feedbackInbox.open && !feedbackInbox.hidden) void showFeedbackPreview();
+  else clearFeedbackPreview();
+});
+
+function showEvalApproval(request) {
+  if (evalToken === request?.token) return;
+  evalToken = request?.token;
+  evalApproval.hidden = !evalToken;
+  evalOrigin.textContent = request?.origin ?? '';
+  // Display format characters explicitly so they cannot reorder the code shown for consent.
+  evalExpression.textContent = (request?.expression ?? '').replace(/\p{Cf}/gu, (char) =>
+    `\\u{${char.codePointAt(0).toString(16)}}`);
+  if (evalToken) evalStatus.textContent = '';
+}
+
+for (const [button, action, message] of [
+  [evalAllow, 'eval-approve', 'Allowed once. Retry the same eval command.'],
+  [evalDeny, 'eval-deny', 'JavaScript request denied.'],
+]) {
+  button.addEventListener('click', async (event) => {
+    if (!event.isTrusted || button.disabled || !evalToken) return;
+    const token = evalToken;
+    evalBusy = true;
+    controls();
+    evalStatus.textContent = '';
+    try {
+      await send({ action, token });
+      if (evalToken === token) showEvalApproval();
+      evalStatus.textContent = message;
+    } catch (error) {
+      evalStatus.textContent = error.message;
+    } finally {
+      evalBusy = false;
+      controls();
+      void update();
+    }
+  });
+}
+
+function setBadge(state, socketName) {
+  const online = state === 'online';
+  if (!online || bridgeSocket.textContent !== socketName) bridgeCopyStatus.textContent = '';
+  bridgeState.dataset.state = state;
+  bridgeState.hidden = online;
+  bridgeState.textContent = online ? '' : state === 'error' ? 'Error' : 'Offline';
+  bridgeSocket.hidden = !online;
+  bridgeSocket.textContent = online ? socketName : '';
+  bridgeSocket.setAttribute('aria-label', online ? `Bridge online. Copy socket name: ${socketName}` : '');
+}
+
+for (const [button, value, label, resultStatus, confirmation = ''] of [
+  [bridgeSocket, effectiveSocket, 'Socket name', bridgeCopyStatus],
+  [copySocket, effectiveSocket, 'Socket name', copyStatus],
+  [copyCli, cliCommand, 'CLI command', copyStatus, 'CLI command copied.'],
+]) {
   button.addEventListener('click', async () => {
     if (button.disabled) return;
     try {
       await navigator.clipboard.writeText(value.textContent);
-      copyStatus.textContent = `${label} copied.`;
+      resultStatus.textContent = confirmation;
     } catch {
-      copyStatus.textContent = `Could not copy ${label.toLowerCase()}.`;
+      resultStatus.textContent = `Could not copy ${label.toLowerCase()}.`;
     }
   });
 }
@@ -121,6 +264,16 @@ socketForm.addEventListener('submit', (event) => {
     return;
   }
   void update({ action: 'set-socket', socketOverride });
+});
+
+evalMode.addEventListener('change', () => {
+  evalSettingsStatus.textContent = '';
+  controls();
+});
+evalSettingsForm.addEventListener('submit', (event) => {
+  event.preventDefault();
+  if (!event.isTrusted || evalModeSave.disabled) return;
+  void update({ action: 'set-eval-mode', evalMode: evalMode.value });
 });
 
 const approval = document.querySelector('#approval');
@@ -218,21 +371,23 @@ screenshotButton.addEventListener('click', async (event) => {
   }
 });
 
-feedback.addEventListener('click', async (event) => {
-  if (!event.isTrusted || feedback.disabled) return;
-  feedbackBusy = true;
-  controls();
-  feedbackStatus.textContent = '';
-  try {
-    await send({ action: 'feedback-start' });
-    window.close();
-  } catch (error) {
-    feedbackStatus.textContent = error.message;
-  } finally {
-    feedbackBusy = false;
+for (const [button, action] of [[feedback, 'feedback-start'], [recall, 'feedback-recall']]) {
+  button.addEventListener('click', async (event) => {
+    if (!event.isTrusted || button.disabled || (button === recall && !feedbackInbox.open)) return;
+    feedbackBusy = true;
     controls();
-  }
-});
+    feedbackStatus.textContent = '';
+    try {
+      await send({ action });
+      window.close();
+    } catch (error) {
+      feedbackStatus.textContent = error.message;
+    } finally {
+      feedbackBusy = false;
+      controls();
+    }
+  });
+}
 
 controls();
 void update();

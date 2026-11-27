@@ -76,13 +76,20 @@ export const commands = {
 // Self-contained for chrome.scripting.executeScript in the isolated top document.
 // Reuses the existing overlay, waitCursor, and snapshot refs; never calls native coordinate input.
 // shortcut: synthetic input only, upgrade if Chrome exposes trusted dispatch bound to a checked DOM target.
-export function interactionInPage(origin, overlayKey, phase, payload) {
+export function interactionInPage(origin, overlayKey, phase, payload, backgroundScroll) {
   const ok = (value) => ({ ok: true, value });
   const fail = (error) => ({ error });
   const state = globalThis.vabuCursorState;
   if (window !== window.top || location.origin !== origin || state?.key !== overlayKey || !state.host.isConnected) {
     return fail('Interaction document changed');
   }
+  const checkBackgroundScroll = () => {
+    if (!backgroundScroll) return;
+    if (Date.now() >= backgroundScroll.deadline) throw new Error('Scroll timed out; input may have been applied. Inspect before retrying');
+    if (!document.hidden || globalThis.origin !== origin || location.href !== backgroundScroll.href) {
+      throw new Error('Background scroll cancelled: tab activation or document changed');
+    }
+  };
   const blocked = 'iframe, frame, embed, object, fencedframe, portal, input[type=file], [inert], :disabled';
   const safe = (element) => {
     if (!element?.isConnected || element.ownerDocument !== document || element.closest(blocked)
@@ -170,6 +177,7 @@ export function interactionInPage(origin, overlayKey, phase, payload) {
   };
 
   try {
+    checkBackgroundScroll();
     if (phase === 'preview') {
       delete state.interactionPreview;
       const selection = payload.kind === 'click' ? {} : undefined;
@@ -237,6 +245,7 @@ export function interactionInPage(origin, overlayKey, phase, payload) {
         return ok(point);
       }
       if (fire(element, new WheelEvent('wheel', { ...mouse(point), deltaX: payload.dx, deltaY: payload.dy }))) {
+        checkBackgroundScroll();
         safe(element);
         for (const [axis, delta] of [['X', payload.dx], ['Y', payload.dy]]) {
           if (!delta) continue;

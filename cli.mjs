@@ -9,52 +9,22 @@ import { runInNewContext } from 'node:vm';
 import { privateSocketDirectory, requestLimit, responseLimit, socketPath } from './socket.mjs';
 import { defaultSocketNames } from './extension/shared/socket-name.mjs';
 
-const usage = `vabu setup [OPTIONS]           Set up the local browser extension and bridge
-vabu status | tabs | use TAB_ID | release
-vabu [--session ID] feedback   Read and clear submitted page comments
-vabu open URL                  Open a background tab; run use TAB_ID before wait or snapshot
-vabu snapshot                  Page text and control references
-vabu --pretty COMMAND ...      Indent JSON for human readers (default: compact)
-vabu [--pretty|--compact] [--socket NAME] [--session ID] COMMAND ...
-                               Select a local Unix socket (default: chrome-default)
-vabu [--session ID] snapshot --brief  Short page preview with clickable refs
-vabu [--session ID] snapshot --find TEXT   Find controls by name; keep clickable refs
-vabu [--session ID] snapshot --regex PATTERN   Match control names with a case-insensitive regex
-vabu [--session ID] snapshot --role ROLE [--find TEXT | --regex PATTERN]
-vabu snapshot --within SELECTOR [--role ROLE]
-vabu find role ROLE --name NAME click
-vabu wait --url URL | --text TEXT [--timeout MS]
-vabu get text|href @rN
-vabu frame-list | frame-read FRAME_ID  Guarded direct iframe text in VABU-opened tabs
-vabu frames                     List verified direct same-origin iframe ID/document pairs
-vabu inspect-query [--brief] --frame ID DOCUMENT_ID LOCATOR_JSON
-vabu inspect-element --frame ID DOCUMENT_ID LOCATOR_JSON
-vabu inspect-wait --frame ID DOCUMENT_ID EVENT TIMEOUT_MS [LOCATOR_JSON]
-vabu inspect-click --frame ID DOCUMENT_ID @iREF
-vabu [--session ID] inspect-query --brief LOCATOR_JSON  Short match list
-vabu click @rN | click X Y     Click a fresh control or viewport point
-vabu move X Y | hover @rN      Move the virtual cursor to a point or control
-vabu type TEXT                 Insert text into the focused text field
-vabu scroll DY [@rN]           Wheel-scroll over the cursor or a control
-vabu [--session ID] screenshot [NEW_FILE.png|jpg] [--if-changed | --threshold 0-1]
-    --screenshot-dir DIR | --screenshot-format png|jpeg | --screenshot-quality 0-100
-    Owned tab viewport, including visible iframe pixels (Firefox requires popup opt-in)
-vabu [--session ID] inspect-dialog show | accept ID | dismiss ID  Owned Chrome tabs only
-vabu [--session ID] console start | reload | read | stop        Owned Chrome tabs only
-vabu [--session ID] js timing                                  Owned Chrome tabs only
-vabu cursor-move TARGET | mouse-click BUTTON MODIFIERS TARGET | double-click TARGET
-vabu drag X1 Y1 X2 Y2 | wheel DX DY [TARGET] | keypress CHORD
-vabu insert-text TEXT | fill @rN TEXT | select-option @rN VALUE | set-checked @rN true|false
-vabu inspect-query LOCATOR_JSON | inspect-element LOCATOR_JSON
-vabu inspect-wait visible|hidden TIMEOUT_MS LOCATOR_JSON
-vabu inspect-wait domcontentloaded|load TIMEOUT_MS
-vabu title | url | tab-info | assets | inspect-page | layout-metrics
-vabu session-start NAME | session-list
-vabu --session ID open URL | tabs | use TAB_ID | session-status | session-end
-vabu --session ID COMMAND ...  Target a named session; select its tab before page commands
-vabu session-start | session-status | session-handoff | session-restore | session-audit
-vabu session-result ok|failed|cancelled | session-end
-TARGET is @rN or X Y; use - for no mouse modifiers. Frame operations in Firefox require 153+.`;
+const usage = `vabu [--pretty|--compact] [--socket NAME] [--session ID] COMMAND ...
+    Forward a command to a local browser bridge (default socket: chrome-default).
+    JSON output is compact by default; --pretty indents it.
+vabu [--socket NAME] instructions
+    Get browser instructions from the loaded extension (no session needed).
+vabu setup [CHROMIUM_EXTENSION_ID [--config-dir ABSOLUTE_PATH] | --firefox]
+    Stage an unpacked build or register the native host.
+vabu help
+    Show CLI options offline.
+
+Client-side options for supported browser commands:
+    snapshot --brief
+    snapshot [--role ROLE] [--find TEXT | --regex PATTERN]
+    inspect-query --brief LOCATOR_JSON
+    screenshot [NEW_FILE.png|jpg] [--if-changed | --threshold 0-1]
+        --screenshot-dir DIR | --screenshot-format png|jpeg | --screenshot-quality 0-100`;
 
 async function request(args) {
   const line = JSON.stringify(args) + '\n';

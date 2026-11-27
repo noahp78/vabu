@@ -10,12 +10,16 @@ const source = (await readFile(new URL('../extension/shared/popup.js', import.me
 
 function popup(browser) {
   const elements = new Map();
+  const element = () => ({ value: '', textContent: '', hidden: true, dataset: {}, attributes: {}, children: [],
+    append(...nodes) { this.children.push(...nodes); },
+    replaceChildren(...nodes) { this.children = nodes; },
+    addEventListener(type, listener) { this[type] = listener; },
+    setAttribute(name, value) { this.attributes[name] = value; } });
   const select = (id) => {
-    if (!elements.has(id)) elements.set(id, { value: '', textContent: '', hidden: true, dataset: {},
-      addEventListener(type, listener) { this[type] = listener; } });
+    if (!elements.has(id)) elements.set(id, { ...element(), hidden: id !== '#home-view' });
     return elements.get(id);
   };
-  const state = { browser, connected: false, starting: false, socketName: `${browser}-default`, socketOverride: null };
+  const state = { browser, connected: false, starting: false, socketName: `${browser}-default`, socketOverride: null, evalMode: 'ask' };
   const actions = [];
   const decisions = [];
   const copied = [];
@@ -35,14 +39,24 @@ function popup(browser) {
     async sendMessage(message) {
       actions.push({ ...message });
       if (message.action === 'status') return { ...state };
+      if (message.action === 'feedback-list') return { feedback: fixture.inbox ?? [], total: state.feedbackCount ?? 0 };
       if (message.action === 'set-socket') {
         if (fixture.failSave) return { error: 'Storage unavailable' };
         state.socketOverride = message.socketOverride;
         state.socketName = message.socketOverride ?? `${browser}-default`;
       }
+      if (message.action === 'set-eval-mode') {
+        if (fixture.failSave) return { error: 'Storage unavailable' };
+        state.evalMode = message.evalMode;
+        delete state.evalApproval;
+      }
       if (message.action === 'start') state.connected = true;
       if (message.action === 'stop') state.connected = false;
-      if (message.action === 'feedback-start' && fixture.feedbackError) return { error: fixture.feedbackError };
+      if (['feedback-start', 'feedback-recall'].includes(message.action) && fixture.feedbackError) return { error: fixture.feedbackError };
+      if (['eval-approve', 'eval-deny'].includes(message.action)) {
+        if (message.token !== state.evalApproval?.token) return { error: 'Request expired' };
+        delete state.evalApproval;
+      }
       return { ok: true };
     },
     connect({ name }) {
@@ -54,18 +68,76 @@ function popup(browser) {
   runInNewContext(source, { defaultSocketNames, socketNameError, validSocketName, [browser === 'firefox' ? 'browser' : 'chrome']: { runtime, permissions },
     window: { close() { permissionActions.push(['close']); } },
     navigator: { clipboard: { async writeText(text) { copied.push(text); } } },
-    document: { querySelector: select }, setTimeout(fn) { fixture.poll = fn; }, clearTimeout() {} });
+    document: { querySelector: select, createElement: element }, setTimeout(fn) { fixture.poll = fn; }, clearTimeout() {} });
   return fixture;
 }
+
+test('popup opens on feedback and keeps settings behind a reversible view', async () => {
+  const { select, actions, channel } = popup('chrome');
+  await setImmediate();
+  const toggle = select('#settings-toggle');
+  assert.equal(select('#home-view').hidden, false);
+  assert.equal(select('#settings-view').hidden, true);
+  toggle.click();
+  assert.equal(select('#home-view').hidden, true);
+  assert.equal(select('#settings-view').hidden, false);
+  assert.equal(toggle.textContent, 'Back');
+  assert.equal(toggle.attributes['aria-expanded'], 'true');
+  channel.onMessage.fire({ state: 'pending', request: { tab: 7, origin: 'https://example.test', token: 'test' } });
+  assert.equal(select('#approval').hidden, false);
+  toggle.click();
+  assert.equal(select('#home-view').hidden, false);
+  assert.equal(select('#settings-view').hidden, true);
+  assert.equal(toggle.textContent, 'Settings');
+  assert.equal(toggle.attributes['aria-expanded'], 'false');
+  assert.deepEqual(actions, [{ action: 'status' }]);
+});
 
 test('popup copies the displayed socket and CLI command', async () => {
   const { select, copied } = popup('firefox');
   await setImmediate();
   await select('#copy-socket').click();
-  assert.equal(select('#copy-status').textContent, 'Socket name copied.');
+  assert.equal(select('#copy-status').textContent, '');
   await select('#copy-cli').click();
   assert.equal(select('#copy-status').textContent, 'CLI command copied.');
   assert.deepEqual(copied, ['firefox-default', 'vabu --socket firefox-default status']);
+});
+
+test('online bridge badge copies the exact effective socket; offline and error badges cannot copy', async () => {
+  for (const browser of ['chrome', 'firefox']) {
+    const fixture = popup(browser);
+    const { select, state, copied } = fixture;
+    const badge = select('#bridge-socket');
+    const offline = select('#bridge-state');
+    await setImmediate();
+    assert.equal(offline.textContent, 'Offline');
+    assert.equal(badge.hidden, true);
+    await badge.click();
+    assert.deepEqual(copied, []);
+    state.connected = true;
+    fixture.poll();
+    await setImmediate();
+    assert.equal(badge.textContent, `${browser}-default`);
+    assert.equal(offline.hidden, true);
+    state.socketName = 'w'.repeat(32);
+    fixture.poll();
+    await setImmediate();
+    assert.equal(badge.textContent, state.socketName);
+    assert.equal(badge.hidden, false);
+    assert.match(badge.attributes['aria-label'], /Bridge online/);
+    await badge.click();
+    assert.deepEqual(copied, [state.socketName]);
+    assert.equal(select('#bridge-copy-status').textContent, '');
+    assert.equal(select('#copy-status').textContent, '');
+    state.bridgeError = 'Disconnected';
+    state.connected = false;
+    fixture.poll();
+    await setImmediate();
+    assert.equal(offline.textContent, 'Error');
+    assert.equal(badge.hidden, true);
+    await badge.click();
+    assert.deepEqual(copied, [state.socketName]);
+  }
 });
 
 test('Firefox popup saves only while stopped, refreshes status, and does not connect for tab approvals', async () => {
@@ -146,6 +218,122 @@ test('page feedback starts only via a trusted click on a connected popup', async
   await button.click({ isTrusted: true });
   assert.deepEqual(actions.at(-1), { action: 'feedback-start' });
   assert.deepEqual(permissionActions, [['close']]);
+});
+
+test('popup counts sent annotations without reading them until the inbox is opened', async () => {
+  const fixture = popup('chrome');
+  const { state, select, actions } = fixture;
+  const inbox = select('#feedback-inbox');
+  await setImmediate();
+  assert.equal(inbox.hidden, true);
+  state.connected = true;
+  state.feedbackCount = 1;
+  fixture.inbox = [{ page: 'https://example.test/', target: '#title', note: '<script>not markup</script>', workspace: 'Demo' }];
+  fixture.poll();
+  await setImmediate();
+  assert.equal(inbox.hidden, false);
+  assert.equal(select('#feedback-count').textContent, '1 sent annotation');
+  assert.ok(actions.every(({ action }) => action === 'status'));
+  inbox.open = true;
+  inbox.toggle();
+  await setImmediate();
+  assert.deepEqual(actions.at(-1), { action: 'feedback-list' });
+  assert.deepEqual(select('#feedback-notes').children[0].children.map(node => node.textContent),
+    ['Demo · https://example.test/ · #title', '<script>not markup</script>']);
+  state.feedbackCount = 0;
+  fixture.poll();
+  await setImmediate();
+  assert.equal(inbox.hidden, true);
+  assert.equal(inbox.open, false);
+  assert.equal(select('#feedback-notes').children.length, 0);
+});
+
+test('sent annotations offer one trusted recall action that closes the popup only on success', async () => {
+  const fixture = popup('chrome');
+  const { state, select, actions, permissionActions } = fixture;
+  const inbox = select('#feedback-inbox');
+  const button = select('#feedback-recall');
+  state.connected = true;
+  state.feedbackCount = 2;
+  await setImmediate();
+  fixture.poll();
+  await setImmediate();
+  await button.click({ isTrusted: true });
+  inbox.open = true;
+  inbox.toggle();
+  await setImmediate();
+  await button.click({ isTrusted: false });
+  assert.ok(actions.every(({ action }) => action !== 'feedback-recall'));
+  fixture.feedbackError = 'This page already has unsent drafts.';
+  await button.click({ isTrusted: true });
+  assert.equal(select('#feedback-status').textContent, fixture.feedbackError);
+  assert.deepEqual(permissionActions, []);
+  fixture.feedbackError = undefined;
+  await button.click({ isTrusted: true });
+  assert.deepEqual(actions.at(-1), { action: 'feedback-recall' });
+  assert.deepEqual(permissionActions, [['close']]);
+});
+
+test('JavaScript mode is saved only on a trusted submit, even when the bridge is stopped', async () => {
+  const fixture = popup('firefox');
+  const { select, state, actions } = fixture;
+  await setImmediate();
+  const mode = select('#eval-mode');
+  const save = select('#eval-mode-save');
+  const submit = isTrusted => select('#eval-settings-form').submit({ isTrusted, preventDefault() {} });
+  assert.equal(mode.value, 'ask');
+  assert.equal(save.disabled, true);
+  mode.value = 'allow';
+  mode.change();
+  fixture.poll();
+  await setImmediate();
+  assert.equal(mode.value, 'allow');
+  assert.equal(save.disabled, false);
+  submit(false);
+  assert.equal(state.evalMode, 'ask');
+  fixture.failSave = true;
+  submit(true);
+  await setImmediate();
+  assert.match(select('#eval-settings-status').textContent, /Storage unavailable/);
+  assert.equal(state.evalMode, 'ask');
+  fixture.failSave = false;
+  submit(true);
+  await setImmediate();
+  assert.deepEqual(actions.slice(-2), [{ action: 'set-eval-mode', evalMode: 'allow' }, { action: 'status' }]);
+  assert.equal(state.evalMode, 'allow');
+  assert.equal(save.disabled, true);
+  assert.equal(select('#eval-settings-status').textContent, '');
+});
+
+test('popup displays the exact eval request for one trusted approve or deny decision', async () => {
+  for (const browser of ['chrome', 'firefox']) {
+    const fixture = popup(browser);
+    const { state, select, actions } = fixture;
+    state.connected = true;
+    state.evalApproval = { token: 'first', origin: 'https://example.test', expression: '\u202e<test>' };
+    await setImmediate();
+    fixture.poll();
+    await setImmediate();
+    assert.equal(select('#eval-approval').hidden, false);
+    assert.equal(select('#eval-origin').textContent, state.evalApproval.origin);
+    assert.equal(select('#eval-expression').textContent, '\\u{202e}<test>');
+    await select('#eval-allow').click({ isTrusted: false });
+    assert.ok(actions.every(({ action }) => action === 'status'));
+    await select('#eval-allow').click({ isTrusted: true });
+    await setImmediate();
+    assert.deepEqual(actions.slice(-2), [{ action: 'eval-approve', token: 'first' }, { action: 'status' }]);
+    assert.equal(select('#eval-approval').hidden, true);
+    assert.match(select('#eval-status').textContent, /Retry the same/);
+    state.evalApproval = { token: 'second', origin: 'https://example.test', expression: '1 + 1' };
+    fixture.poll();
+    await setImmediate();
+    assert.equal(select('#eval-expression').textContent, '1 + 1');
+    await select('#eval-deny').click({ isTrusted: true });
+    await setImmediate();
+    assert.deepEqual(actions.slice(-2), [{ action: 'eval-deny', token: 'second' }, { action: 'status' }]);
+    assert.equal(select('#eval-approval').hidden, true);
+    assert.match(select('#eval-status').textContent, /denied/);
+  }
 });
 
 test('Chrome popup connects for tab approvals and requires a trusted click with a pending token', async () => {

@@ -6,7 +6,9 @@ const dist = fileURLToPath(new URL('../dist/', import.meta.url));
 const shared = [
   'popup.html', 'popup.css', 'popup.js', 'toolbar.mjs', 'socket-name.mjs', 'domains.js',
   'interaction.mjs', 'inspection.mjs', 'scoped-snapshot.mjs', 'find-click.mjs',
-  'wait.mjs', 'get-element.mjs', 'frame-probes.mjs', 'capture-jpeg.mjs', 'feedback.mjs',
+  'wait.mjs', 'get-element.mjs', 'frame-probes.mjs', 'capture-jpeg.mjs', 'feedback.mjs', 'tab-lifecycle.mjs',
+  'browser-instructions.mjs', 'eval.mjs', 'navigation-timing.mjs',
+  'icons/vabu.svg',
   ...['vabu', 'vabu-online'].flatMap(icon => [16, 32, 48, 128].map(size => `icons/${icon}-${size}.png`)),
 ];
 
@@ -19,6 +21,7 @@ export async function stageExtension(browser, directory, runtime) {
   const copy = (source, target = source) => copyFile(new URL(source, import.meta.url), join(output, target));
   await Promise.all([
     copy(`${browser}/manifest.json`, 'manifest.json'),
+    copy('../docs/browser-instructions.md', 'shared/browser-instructions.md'),
     ...shared.map(file => copy(`shared/${file}`)),
     ...runtime.map(file => copy(`${browser}/${file}`)),
   ]);
