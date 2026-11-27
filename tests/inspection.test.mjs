@@ -89,6 +89,8 @@ test('CSS shorthand and structural attributes share the same restricted grammar'
     'input[type=radio][name^=bundle_option]',
     '[data-ctp-configurator] label',
     '[data-ctp-configurator]>input[type="radio"]',
+    'section>button:nth-of-type(2)',
+    'button:nth-of-type(999999)',
   ];
   for (const value of selectors) {
     const ctx = context({ async run(operation, spec) {
@@ -102,7 +104,9 @@ test('CSS shorthand and structural attributes share the same restricted grammar'
   }
   const ctx = context({ run: assert.fail });
   for (const css of ['input[value^=secret]', '[data-token^=secret]', 'input[autocomplete]',
-    '[name^=bundle_option]', 'form:has(input[type=radio])', '[data-marker],input', 'input[name^="bad value"]']) {
+    '[name^=bundle_option]', 'form:has(input[type=radio])', '[data-marker],input', 'input[name^="bad value"]',
+    'button:nth-of-type(0)', 'button:nth-of-type(01)', 'button:nth-of-type(-1)', 'button:nth-of-type(2n)',
+    'button:nth-of-type(1000000)', 'button:nth-of-type(1):nth-of-type(2)', 'button:hover']) {
     await assert.rejects(call('query', [JSON.stringify({ css })], ctx), /supports only/);
   }
 });

@@ -244,6 +244,10 @@ test('Firefox binds frame reads and screenshots to the owned, selected document 
     assert.deepEqual(await feedbackStart(), { ok: true });
     assert.deepEqual(await browser.runtime.onMessage.fire({ action: 'feedback-submit', token: feedbackToken,
       points: [{ note: 'Existing tab', target: null }] }, { id: 'vabu-test', frameId: 0, tab: tab(1), url: top.url }), { ok: true });
+    assert.equal((await browser.runtime.onMessage.fire({ action: 'status' }, popup)).feedbackCount, 1);
+    assert.equal(await browser.runtime.onMessage.fire({ action: 'feedback-list' }, { ...popup, tab: tab(1) }), false);
+    assert.deepEqual(await browser.runtime.onMessage.fire({ action: 'feedback-list' }, popup),
+      { total: 1, feedback: [{ page: top.url, target: null, note: 'Existing tab', workspace: null }] });
     assert.deepEqual(await run('feedback'), { feedback: [{ page: top.url, target: null, note: 'Existing tab' }] });
     activeTabId = 2;
     assert.deepEqual(await feedbackStart(), { ok: true }); // No <all_urls> needed for feedback.

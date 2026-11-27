@@ -29,6 +29,13 @@ const socketStatus = document.querySelector('#socket-status');
 const socketSave = document.querySelector('#socket-save');
 const feedback = document.querySelector('#feedback');
 const feedbackStatus = document.querySelector('#feedback-status');
+const feedbackInbox = document.querySelector('#feedback-inbox');
+const feedbackCount = document.querySelector('#feedback-count');
+const feedbackInboxStatus = document.querySelector('#feedback-inbox-status');
+const feedbackNotes = document.querySelector('#feedback-notes');
+const recall = document.querySelector('#feedback-recall');
+let inboxCount = 0;
+let inboxRevision = 0;
 let feedbackBusy = false;
 let current;
 let savedSocket = '';
@@ -46,6 +53,7 @@ async function send(message) {
 function controls() {
   bridge.disabled = busy || !current;
   feedback.disabled = busy || feedbackBusy || !current?.connected;
+  recall.disabled = feedback.disabled || !inboxCount;
   bridgeSocket.disabled = busy || bridgeSocket.hidden;
   copySocket.disabled = copyCli.disabled = busy || !current;
   socketInput.disabled = socketSave.disabled = busy || !current || current.connected || current.starting;
@@ -74,6 +82,7 @@ async function update(message) {
     if (request !== revision) return;
     current = result;
     const { connected, starting, browser, socketName, socketOverride, bridgeError } = current;
+    updateFeedbackCount(connected ? current.feedbackCount ?? 0 : 0);
     effectiveSocket.textContent = socketName;
     cliCommand.textContent = `vabu --socket ${socketName} status`;
     cliHint.hidden = false;
@@ -91,6 +100,7 @@ async function update(message) {
   } catch (error) {
     if (request !== revision) return;
     current = undefined;
+    updateFeedbackCount(0);
     effectiveSocket.textContent = 'Unavailable';
     cliHint.hidden = true;
     status.textContent = error.message;
@@ -103,6 +113,53 @@ async function update(message) {
     }
   }
 }
+
+function updateFeedbackCount(count) {
+  if (count === inboxCount) return;
+  inboxCount = count;
+  feedbackInbox.hidden = !count;
+  feedbackCount.textContent = count === 1 ? '1 sent annotation' : `${count} sent annotations`;
+  if (!count) {
+    feedbackInbox.open = false;
+    clearFeedbackPreview();
+  } else if (feedbackInbox.open) void showFeedbackPreview();
+}
+
+function clearFeedbackPreview() {
+  ++inboxRevision;
+  feedbackInboxStatus.textContent = '';
+  feedbackNotes.replaceChildren();
+}
+
+async function showFeedbackPreview() {
+  clearFeedbackPreview();
+  const revision = inboxRevision;
+  feedbackInboxStatus.textContent = 'Loading annotations…';
+  try {
+    const { feedback: notes, total } = await send({ action: 'feedback-list' });
+    if (revision !== inboxRevision || !feedbackInbox.open) return;
+    for (const { page, target, note, workspace } of notes) {
+      const item = document.createElement('li');
+      const context = document.createElement('p');
+      context.className = 'hint';
+      context.textContent = [workspace, page, target].filter(Boolean).join(' · ');
+      const content = document.createElement('p');
+      content.className = 'note';
+      content.textContent = note;
+      item.append(context, content);
+      feedbackNotes.append(item);
+    }
+    feedbackInboxStatus.textContent = total > notes.length ? `Showing ${notes.length} of ${total}. Use vabu feedback to retrieve the rest.`
+      : total ? '' : 'No sent annotations are waiting.';
+  } catch (error) {
+    if (revision === inboxRevision) feedbackInboxStatus.textContent = error.message;
+  }
+}
+
+feedbackInbox.addEventListener('toggle', () => {
+  if (feedbackInbox.open && !feedbackInbox.hidden) void showFeedbackPreview();
+  else clearFeedbackPreview();
+});
 
 function setBadge(state, socketName) {
   const online = state === 'online';
@@ -241,21 +298,23 @@ screenshotButton.addEventListener('click', async (event) => {
   }
 });
 
-feedback.addEventListener('click', async (event) => {
-  if (!event.isTrusted || feedback.disabled) return;
-  feedbackBusy = true;
-  controls();
-  feedbackStatus.textContent = '';
-  try {
-    await send({ action: 'feedback-start' });
-    window.close();
-  } catch (error) {
-    feedbackStatus.textContent = error.message;
-  } finally {
-    feedbackBusy = false;
+for (const [button, action] of [[feedback, 'feedback-start'], [recall, 'feedback-recall']]) {
+  button.addEventListener('click', async (event) => {
+    if (!event.isTrusted || button.disabled || (button === recall && !feedbackInbox.open)) return;
+    feedbackBusy = true;
     controls();
-  }
-});
+    feedbackStatus.textContent = '';
+    try {
+      await send({ action });
+      window.close();
+    } catch (error) {
+      feedbackStatus.textContent = error.message;
+    } finally {
+      feedbackBusy = false;
+      controls();
+    }
+  });
+}
 
 controls();
 void update();

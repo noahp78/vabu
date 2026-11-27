@@ -36,9 +36,15 @@
 
       <section class="card" aria-labelledby="feedback-heading">
         <h2 id="feedback-heading">Page feedback</h2>
-        <p>Leave comments on the active page.</p>
+        <p>Add comments to this page, then send them to the local VABU inbox.</p>
         <button id="feedback" class="primary" type="button" disabled>Annotate page</button>
         <p id="feedback-status" role="status"></p>
+        <details id="feedback-inbox" hidden>
+          <summary id="feedback-count">View sent annotations</summary>
+          <p id="feedback-inbox-status" class="hint" role="status"></p>
+          <ol id="feedback-notes" aria-label="Sent annotations"></ol>
+          <button id="feedback-recall" type="button" disabled>Recall latest batch as drafts</button>
+        </details>
       </section>
     </div>
 

@@ -25,7 +25,7 @@ async function until(check) {
   assert.fail('Timed out waiting for Chromium fixture');
 }
 
-test('isolated Chromium: background scroll, owned capture and dialogs', {
+test('isolated Chromium: background scroll, owned capture and dialogs, and feedback recall', {
   skip: !chromium || process.platform !== 'linux', timeout: 30000,
 }, async (t) => {
   const dir = await mkdtemp(join(tmpdir(), 'vabu-chrome-'));
@@ -37,6 +37,7 @@ test('isolated Chromium: background scroll, owned capture and dialogs', {
   let next = '';
   let polling = false;
   let result;
+  let recallTab, recallResult;
   const orders = [];
   const scrollSteps = [];
   let scrollState, foregroundWheel;
@@ -57,6 +58,11 @@ test('isolated Chromium: background scroll, owned capture and dialogs', {
       res.end();
     }
     else if (req.url.startsWith('/order/')) { orders.push(req.url.slice('/order/'.length)); res.end(); }
+    else if (req.url === '/recall-fixture') { res.end(String(recallTab ?? '')); recallTab = undefined; }
+    else if (req.url.startsWith('/recall-result?')) {
+      recallResult = new URL(req.url, 'http://127.0.0.1').searchParams.get('value');
+      res.end();
+    }
     else if (req.url.startsWith('/title?')) {
       titles.push(new URL(req.url, 'http://127.0.0.1').searchParams.get('value'));
       res.end();
@@ -64,6 +70,7 @@ test('isolated Chromium: background scroll, owned capture and dialogs', {
     else {
       res.setHeader('Content-Type', 'text/html');
       res.end(`<!doctype html><title>Owned fixture</title><body>Fixture
+      <p id="style-target" style="font-size: 20px !important; margin: 2px 3px 4px 5px">Original content</p>
       <input type="file" id="protected"><div style="height: 150px"></div>
       <div id="panel" style="width: 200px; height: 160px; overflow: auto">
         <div style="position: sticky; top: 0"><button>Panel target</button><button id="cancel">Cancel scroll</button></div>
@@ -127,7 +134,31 @@ test('isolated Chromium: background scroll, owned capture and dialogs', {
         resolved = true;
         return reply;
       };
-    ` + await readFile(worker, 'utf8'));
+    ` + await readFile(worker, 'utf8') + `
+      setInterval(async () => {
+        const id = Number(await fetch(${JSON.stringify(url + 'recall-fixture')}).then(r => r.text()));
+        if (!id) return;
+        let result = 'ok';
+        try {
+          const tab = await chrome.tabs.update(id, { active: true });
+          const connection = bridge;
+          const popup = { id: chrome.runtime.id, url: chrome.runtime.getURL('shared/popup.html') };
+          const feedback = (action, sender, fields = {}) => handleFeedback(chrome, connection, () => bridge, tabId =>
+            [...connection.workspaces.values()].find(owner => owner.tabs.has(tabId)) ?? connection, { action, ...fields }, sender);
+          for (const note of ['Older annotation', 'Latest  annotation']) {
+            await feedback('feedback-start', popup);
+            const { token, scope } = connection.feedbackLeases.get(id);
+            await feedback('feedback-submit', { id: popup.id, tab, url: scope.href, frameId: 0, documentId: scope.documentId },
+              { token, points: [{ note, target: '#style-target' }] });
+          }
+          // This opens and activates the real annotation UI in the isolated document.
+          await feedback('feedback-recall', popup);
+        } catch (error) {
+          result = error.message;
+        }
+        await fetch(${JSON.stringify(url + 'recall-result?value=')} + encodeURIComponent(result));
+      }, 100);
+    `);
     const id = createHash('sha256').update(extension).digest('hex').slice(0, 32)
       .replace(/./g, h => String.fromCharCode(97 + Number.parseInt(h, 16)));
     const install = join(root, 'install.mjs');
@@ -193,6 +224,11 @@ test('isolated Chromium: background scroll, owned capture and dialogs', {
     } finally { t.diagnostic('scroll trace: ' + scrollSteps.join(', ')); }
     assert.ok(scrollSteps.every(step => step.startsWith('page-')), 'background scroll never sends CDP mouse input');
     await scoped('release');
+    recallTab = tab;
+    assert.equal(await until(() => recallResult), 'ok');
+    assert.deepEqual(await scoped('feedback'), { feedback: [{ page: url, target: '#style-target', note: 'Older annotation' }] });
+    assert.deepEqual(await scoped('feedback'), { feedback: [] });
+
     const foreground = await scoped('open', url + 'foreground');
     await scoped('tab-show', String(foreground.tab));
     await until(() => scoped('use', String(foreground.tab)).catch(() => null));

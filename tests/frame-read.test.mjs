@@ -120,7 +120,11 @@ test('Chrome frame reads, viewport captures and dialogs stay within the verified
     const submitExisting = () => send({ action: 'feedback-submit', token: feedbackToken,
       points: [{ note: 'Existing tab', target: null }] }, sender);
     assert.deepEqual(await submitExisting(), { ok: true });
+    assert.equal((await action('status')).feedbackCount, 1);
+    assert.equal(chrome.runtime.onMessage.fire({ action: 'feedback-list' }, { ...popupSender, tab: existing }, assert.fail), false);
+    assert.deepEqual(await action('feedback-list'), { total: 1, feedback: [{ page: existing.url, target: null, note: 'Existing tab', workspace: null }] });
     assert.deepEqual((await run('feedback')).value, { feedback: [{ page: existing.url, target: null, note: 'Existing tab' }] });
+    assert.equal((await action('status')).feedbackCount, 0);
     assert.deepEqual(await action('feedback-start'), { ok: true });
     chrome.webNavigation.onHistoryStateUpdated.fire({ tabId: 1, frameId: 0 });
     assert.match((await submitExisting()).error, /current active document/);

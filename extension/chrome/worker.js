@@ -1,5 +1,5 @@
 import { hasHostAccess, webUrl } from '../shared/domains.js';
-import { setBridgeIcon } from '../shared/toolbar.mjs';
+import { isToolbarPopup, setBridgeIcon } from '../shared/toolbar.mjs';
 import { defaultSocketNames, socketNameError, validSocketName } from '../shared/socket-name.mjs';
 import { commands as interaction, interactionInPage } from '../shared/interaction.mjs';
 import { commands as inspection, inspectionPage, isFrameInspection, runListedFrameInspection } from '../shared/inspection.mjs';
@@ -14,7 +14,7 @@ import { canReadFrames, createFrameScope } from './frame-read.mjs';
 import { captureOwnedViewport } from './owned-capture.mjs';
 import { captureOptions, captureResponse } from '../shared/capture-jpeg.mjs';
 import { createOwnedDialog } from './owned-dialog.mjs';
-import { handleFeedback, invalidateFeedback, takeFeedback } from '../shared/feedback.mjs';
+import { feedbackCount, handleFeedback, invalidateFeedback, listFeedback, takeFeedback } from '../shared/feedback.mjs';
 import { forgetWorkspaceWindow, manageOwnedTab, openBackgroundTab } from '../shared/tab-lifecycle.mjs';
 import { navigationTiming } from '../shared/navigation-timing.mjs';
 
@@ -301,16 +301,23 @@ function tryAutoStart() {
 chrome.runtime.onStartup?.addListener(tryAutoStart);
 chrome.runtime.onInstalled?.addListener(tryAutoStart);
 chrome.runtime.onMessage.addListener((message, sender, reply) => {
-  if (['feedback-start', 'feedback-submit'].includes(message?.action)) {
+  if (['feedback-start', 'feedback-recall', 'feedback-submit'].includes(message?.action)) {
     const connection = bridge;
     handleFeedback(chrome, connection, () => bridge, id =>
       [...connection.workspaces.values()].find(workspace => workspace.tabs.has(id)) ?? connection,
     message, sender).then(reply, error => reply({ error: error.message }));
     return true;
   }
+  if (message?.action === 'feedback-list') {
+    if (!isToolbarPopup(chrome.runtime, sender)) return false;
+    reply(listFeedback(bridge));
+    return false;
+  }
   if (sender.url !== popupUrl || !['status', 'start', 'stop', 'set-socket'].includes(message?.action)) return false;
   const response = message.action === 'status'
-    ? tryAutoStart().then(() => changeBridge('status'))
+    ? tryAutoStart().then(() => changeBridge('status')).then(status => ({
+      ...status, ...(isToolbarPopup(chrome.runtime, sender) ? { feedbackCount: feedbackCount(bridge) } : {}),
+    }))
     : changeBridge(message.action, message.socketOverride);
   response.then((result) => reply(result ?? { ok: true }), (error) => reply({ error: error.message }));
   return true;
@@ -319,7 +326,7 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
 chrome.permissions.onRemoved.addListener(({ origins, permissions }) => {
   if (origins?.length || permissions?.some((permission) => ['webNavigation', 'debugger', 'scripting'].includes(permission))) {
     clearApproval();
-    if (bridge) delete bridge.feedbackLease;
+    invalidateFeedback(bridge);
     if (session) void detach(session);
   }
 });

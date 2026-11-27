@@ -39,6 +39,7 @@ function popup(browser) {
     async sendMessage(message) {
       actions.push({ ...message });
       if (message.action === 'status') return { ...state };
+      if (message.action === 'feedback-list') return { feedback: fixture.inbox ?? [], total: state.feedbackCount ?? 0 };
       if (message.action === 'set-socket') {
         if (fixture.failSave) return { error: 'Storage unavailable' };
         state.socketOverride = message.socketOverride;
@@ -46,7 +47,7 @@ function popup(browser) {
       }
       if (message.action === 'start') state.connected = true;
       if (message.action === 'stop') state.connected = false;
-      if (message.action === 'feedback-start' && fixture.feedbackError) return { error: fixture.feedbackError };
+      if (['feedback-start', 'feedback-recall'].includes(message.action) && fixture.feedbackError) return { error: fixture.feedbackError };
       return { ok: true };
     },
     connect({ name }) {
@@ -207,6 +208,60 @@ test('page feedback starts only via a trusted click on a connected popup', async
   fixture.feedbackError = undefined;
   await button.click({ isTrusted: true });
   assert.deepEqual(actions.at(-1), { action: 'feedback-start' });
+  assert.deepEqual(permissionActions, [['close']]);
+});
+
+test('popup counts sent annotations without reading them until the inbox is opened', async () => {
+  const fixture = popup('chrome');
+  const { state, select, actions } = fixture;
+  const inbox = select('#feedback-inbox');
+  await setImmediate();
+  assert.equal(inbox.hidden, true);
+  state.connected = true;
+  state.feedbackCount = 1;
+  fixture.inbox = [{ page: 'https://example.test/', target: '#title', note: '<script>not markup</script>', workspace: 'Demo' }];
+  fixture.poll();
+  await setImmediate();
+  assert.equal(inbox.hidden, false);
+  assert.equal(select('#feedback-count').textContent, '1 sent annotation');
+  assert.ok(actions.every(({ action }) => action === 'status'));
+  inbox.open = true;
+  inbox.toggle();
+  await setImmediate();
+  assert.deepEqual(actions.at(-1), { action: 'feedback-list' });
+  assert.deepEqual(select('#feedback-notes').children[0].children.map(node => node.textContent),
+    ['Demo · https://example.test/ · #title', '<script>not markup</script>']);
+  state.feedbackCount = 0;
+  fixture.poll();
+  await setImmediate();
+  assert.equal(inbox.hidden, true);
+  assert.equal(inbox.open, false);
+  assert.equal(select('#feedback-notes').children.length, 0);
+});
+
+test('sent annotations offer one trusted recall action that closes the popup only on success', async () => {
+  const fixture = popup('chrome');
+  const { state, select, actions, permissionActions } = fixture;
+  const inbox = select('#feedback-inbox');
+  const button = select('#feedback-recall');
+  state.connected = true;
+  state.feedbackCount = 2;
+  await setImmediate();
+  fixture.poll();
+  await setImmediate();
+  await button.click({ isTrusted: true });
+  inbox.open = true;
+  inbox.toggle();
+  await setImmediate();
+  await button.click({ isTrusted: false });
+  assert.ok(actions.every(({ action }) => action !== 'feedback-recall'));
+  fixture.feedbackError = 'This page already has unsent drafts.';
+  await button.click({ isTrusted: true });
+  assert.equal(select('#feedback-status').textContent, fixture.feedbackError);
+  assert.deepEqual(permissionActions, []);
+  fixture.feedbackError = undefined;
+  await button.click({ isTrusted: true });
+  assert.deepEqual(actions.at(-1), { action: 'feedback-recall' });
   assert.deepEqual(permissionActions, [['close']]);
 });
 

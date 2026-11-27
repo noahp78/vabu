@@ -26,10 +26,11 @@ function selector(input) {
         const withoutData = part.replace(dataPresence, '.vabu-attribute');
         const structural = /^input(?=[.#\[])/i.test(part)
           ? withoutData.replace(inputAttribute, '.vabu-attribute') : withoutData;
-        return compound.test(structural);
+        const withoutPosition = structural.replace(/:nth-of-type\([1-9]\d{0,5}\)$/i, '');
+        return compound.test(withoutPosition) && Boolean(withoutPosition);
       };
       if (!value.split(/[> ]/).every(valid)) {
-        throw new Error('CSS locator supports only tags, IDs, classes, [data-*] presence, input[type=…], input[name^=…], and descendant/child combinators');
+        throw new Error('CSS locator supports only tags, IDs, classes, [data-*] presence, input[type=…], input[name^=…], :nth-of-type(N) with N from 1 to 999999, and descendant/child combinators');
       }
     }
     if (['name', 'label', 'text'].includes(item.by)) value = value.replace(/\s+/g, ' ');

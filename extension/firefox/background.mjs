@@ -1,5 +1,5 @@
 import { domainPattern, hasHostAccess, webUrl } from '../shared/domains.js';
-import { setBridgeIcon } from '../shared/toolbar.mjs';
+import { isToolbarPopup, setBridgeIcon } from '../shared/toolbar.mjs';
 import { defaultSocketNames, socketNameError, validSocketName } from '../shared/socket-name.mjs';
 import { commands as interaction } from '../shared/interaction.mjs';
 import { commands as inspection, isFrameInspection, runListedFrameInspection } from '../shared/inspection.mjs';
@@ -8,7 +8,7 @@ import { commands as find } from '../shared/find-click.mjs';
 import { commands as wait } from '../shared/wait.mjs';
 import { commands as get } from '../shared/get-element.mjs';
 import { captureOptions, captureResponse, validateCapture } from '../shared/capture-jpeg.mjs';
-import { handleFeedback, invalidateFeedback, takeFeedback } from '../shared/feedback.mjs';
+import { feedbackCount, handleFeedback, invalidateFeedback, listFeedback, takeFeedback } from '../shared/feedback.mjs';
 import { forgetWorkspaceWindow, manageOwnedTab, openBackgroundTab } from '../shared/tab-lifecycle.mjs';
 import { navigationTiming } from '../shared/navigation-timing.mjs';
 import { createFirefoxFrameScope, hasDocumentId, hasFrameApis, injectDocument, navigationEvents, unavailable } from './frame-read.mjs';
@@ -84,12 +84,16 @@ async function storedSocketName() {
 }
 
 browser.runtime.onMessage.addListener((message, sender) => {
-  if (['feedback-start', 'feedback-submit'].includes(message?.action)) {
+  if (['feedback-start', 'feedback-recall', 'feedback-submit'].includes(message?.action)) {
     const connection = bridge;
     return handleFeedback(browser, connection, () => bridge, id =>
       [...connection.workspaces.values()].find(workspace => workspace.ownedTabs.has(id)) ?? connection,
     message, sender)
       .catch(error => ({ error: error.message }));
+  }
+  if (message?.action === 'feedback-list') {
+    if (!isToolbarPopup(browser.runtime, sender)) return false;
+    return Promise.resolve(listFeedback(bridge));
   }
   if (sender.url !== browser.runtime.getURL('shared/popup.html') || !['status', 'start', 'stop', 'set-socket'].includes(message?.action)) return false;
   // Serialize setting writes and launches, but let Stop cancel the native handshake.
@@ -99,7 +103,8 @@ browser.runtime.onMessage.addListener((message, sender) => {
       const socketOverride = validSocketName(saved) ? saved : null;
       return { browser: 'firefox', connected: bridge?.online === true, starting: !!bridge && !bridge.online,
         socketName: bridge?.socketName ?? socketOverride ?? defaultSocketName, socketOverride,
-        bridgeError: bridgeError ?? (saved === socketOverride ? undefined : invalidSavedSocketName) };
+        bridgeError: bridgeError ?? (saved === socketOverride ? undefined : invalidSavedSocketName),
+        ...(isToolbarPopup(browser.runtime, sender) ? { feedbackCount: feedbackCount(bridge) } : {}) };
     }
     if (message.action === 'set-socket') {
       if (bridge) throw new Error('Stop the local bridge before changing its socket name');
@@ -147,7 +152,7 @@ browser.tabs.onUpdated.addListener((id, change) => {
 });
 browser.permissions.onRemoved.addListener(({ origins, permissions }) => {
   if (origins?.length || permissions?.some(permission => ['scripting', 'webNavigation'].includes(permission))) {
-    if (bridge) delete bridge.feedbackLease;
+    invalidateFeedback(bridge);
     release();
   }
 });
