@@ -1,7 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-const event = () => ({ addListener(fn) { this.fire = fn; } });
+const event = () => {
+  const listeners = new Set();
+  return {
+    addListener: fn => listeners.add(fn), removeListener: fn => listeners.delete(fn),
+    fire(...args) { let result; for (const fn of listeners) result = fn(...args); return result; },
+  };
+};
 
 test('named sessions group their own tabs and reject commands targeting another session', async () => {
   const port = { onMessage: event(), onDisconnect: event(), postMessage(message) {
@@ -19,14 +25,23 @@ test('named sessions group their own tabs and reject commands targeting another 
   let afterPreview;
   let normalWindow = { id: 1, type: 'normal', incognito: false };
   globalThis.chrome = {
-    windows: { async getLastFocused(options) {
-      assert.deepEqual(options, { windowTypes: ['normal'] });
-      return normalWindow;
-    } },
+    windows: {
+      onRemoved: event(),
+      async getLastFocused(options) {
+        assert.deepEqual(options, { windowTypes: ['normal'] });
+        return normalWindow;
+      },
+      async get(id) { return { id, type: 'normal', incognito: false }; },
+      async update(id, options) {
+        assert.deepEqual(options, { focused: true });
+        normalWindow = await this.get(id);
+        return { ...normalWindow, focused: true };
+      },
+    },
     runtime: { onMessage: event(), onConnect: event(), getURL: () => 'popup', connectNative: () => port },
     storage: { local: { async get() { return {}; } }, session: { async set() {} } },
     action: { async setBadgeText() {}, async setIcon() {} },
-    permissions: { onRemoved: event(), async contains() { return true; } },
+    permissions: { onRemoved: event(), async contains() { return true; }, async getAll() { return {}; } },
     debugger: { onDetach: event(), onEvent: event(), async attach() {}, async detach() {}, async sendCommand(_target, method, params) {
       if (method === 'Input.dispatchMouseEvent') mouseEvents.push(params.type);
     } },
@@ -54,17 +69,29 @@ test('named sessions group their own tabs and reject commands targeting another 
     tabs: {
       onUpdated: event(), onRemoved: event(),
       async get(id) { return tabs.get(id); },
-      update: assert.fail,
+      async update(id, options) {
+        const tab = tabs.get(id);
+        if (options.url) { tab.url = options.url; return tab; }
+        assert.deepEqual(options, { active: true });
+        for (const sibling of tabs.values()) if (sibling.windowId === tab.windowId) sibling.active = sibling === tab;
+        return tab;
+      },
+      async remove(id) {
+        tabs.delete(id);
+        this.onRemoved.fire(id);
+      },
       async create({ url, windowId, active }) {
-        assert.equal(windowId, normalWindow.id);
         assert.equal(active, false);
         const tab = { id: tabs.size + 1, groupId: -1, windowId, url, active, status: 'complete' };
         tabs.set(tab.id, tab);
         return tab;
       },
-      async query({ groupId }) { return [...tabs.values()].filter(tab => groupId === undefined || tab.groupId === groupId); },
-      async group({ groupId = groups.size + 1, tabIds }) {
-        groups.set(groupId, groups.get(groupId) ?? { windowId: 1 });
+      async query({ groupId, windowId }) {
+        return [...tabs.values()].filter(tab =>
+          (groupId === undefined || tab.groupId === groupId) && (windowId === undefined || tab.windowId === windowId));
+      },
+      async group({ groupId = groups.size + 1, tabIds, createProperties }) {
+        if (createProperties) groups.set(groupId, createProperties);
         for (const id of tabIds) tabs.get(id).groupId = groupId;
         return groupId;
       },
@@ -91,8 +118,12 @@ test('named sessions group their own tabs and reject commands targeting another 
     const b = await run('session-start', 'Catalog');
     assert.notEqual(a.sessionId, b.sessionId);
     const first = await run('--session', a.sessionId, 'open', 'https://example.test/');
+    normalWindow = { ...savedWindow, id: 2 };
     const sibling = await run('--session', a.sessionId, 'open', 'https://example.test/other');
     const second = await run('--session', b.sessionId, 'open', 'https://example.test/');
+    assert.equal(tabs.get(first.tab).windowId, 1);
+    assert.equal(tabs.get(sibling.tab).windowId, 1);
+    assert.equal(tabs.get(second.tab).windowId, 2);
     assert.equal(first.active, false);
     assert.equal(sibling.active, false);
     assert.equal(second.active, false);
@@ -136,6 +167,27 @@ test('named sessions group their own tabs and reject commands targeting another 
     } finally {
       await run('release');
     }
+
+    const B = ['--session', b.sessionId];
+    assert.match(await run('tab-show', String(second.tab)), /not owned/);
+    assert.match(await run(...B, 'tab-close', String(first.tab)), /not owned/);
+    assert.match(await run('tab-close', String(sibling.tab)), /not owned/);
+    assert.match(await run(...B, 'tab-close', String(second.tab)), /active or pinned/);
+    assert.equal((await run(...B, 'status')).tab, null);
+    const extra = await run(...B, 'open', 'https://example.test/');
+    normalWindow = savedWindow;
+    assert.deepEqual(await run(...B, 'tab-show', String(extra.tab)),
+      { tab: extra.tab, window: 2, active: true, focused: true });
+    assert.equal(normalWindow.id, 2);
+    assert.equal((await run(...B, 'status')).tab, null);
+    assert.match(await run('tab-navigate', String(extra.tab), 'https://example.test/next'), /not owned/);
+    await run(...B, 'use', String(extra.tab));
+    assert.deepEqual(await run(...B, 'tab-navigate', String(second.tab), 'https://example.test/next'), { tab: second.tab, requested: true });
+    assert.equal((await run(...B, 'status')).tab, extra.tab);
+    assert.deepEqual(await run(...B, 'tab-navigate', String(extra.tab), 'https://example.test/'), { tab: extra.tab, requested: true });
+    assert.equal((await run(...B, 'status')).tab, null);
+    assert.deepEqual(await run(...B, 'tab-close', String(second.tab)), { tab: second.tab, closed: true });
+    assert.match(await run(...B, 'tab-show', String(second.tab)), /not owned/);
   } finally {
     delete globalThis.chrome;
   }

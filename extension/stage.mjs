@@ -6,7 +6,7 @@ const dist = fileURLToPath(new URL('../dist/', import.meta.url));
 const shared = [
   'popup.html', 'popup.css', 'popup.js', 'toolbar.mjs', 'socket-name.mjs', 'domains.js',
   'interaction.mjs', 'inspection.mjs', 'scoped-snapshot.mjs', 'find-click.mjs',
-  'wait.mjs', 'get-element.mjs', 'frame-probes.mjs', 'capture-jpeg.mjs', 'feedback.mjs',
+  'wait.mjs', 'get-element.mjs', 'frame-probes.mjs', 'capture-jpeg.mjs', 'feedback.mjs', 'tab-lifecycle.mjs',
   'icons/vabu.svg',
   ...['vabu', 'vabu-online'].flatMap(icon => [16, 32, 48, 128].map(size => `icons/${icon}-${size}.png`)),
 ];

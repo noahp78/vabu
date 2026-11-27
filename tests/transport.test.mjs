@@ -99,6 +99,21 @@ test('native hosts bind only after configuration and route CLI calls to distinct
     connection.send({ id, value: { profile: port } });
     assert.equal((await output).stdout, JSON.stringify({ profile: port }, null, pretty ? 2 : 0) + '\n');
   }));
+  for (const [connection, argv, command] of [
+    [profiles[0][0], ['tab-navigate', '42', 'https://example.test/other'], ['tab-navigate', '42', 'https://example.test/other']],
+    [profiles[1][0], ['--socket', 'firefox-default', '--session', 'demo', 'tab-navigate', '42', 'https://example.test/other'],
+      ['--session', 'demo', 'tab-navigate', '42', 'https://example.test/other']],
+    [profiles[0][0], ['tab-show', '42'], ['tab-show', '42']],
+    [profiles[1][0], ['--socket', 'firefox-default', '--session', 'demo', 'tab-show', '42'], ['--session', 'demo', 'tab-show', '42']],
+    [profiles[0][0], ['tab-close', '43'], ['tab-close', '43']],
+    [profiles[1][0], ['--socket', 'firefox-default', '--session', 'demo', 'tab-close', '43'], ['--session', 'demo', 'tab-close', '43']],
+  ]) {
+    const output = run(...argv);
+    const { id, args } = await connection.next();
+    assert.deepEqual(args, command);
+    connection.send({ id, value: { ok: true } });
+    assert.deepEqual(JSON.parse((await output).stdout), { ok: true });
+  }
   for (const args of [['--socket'], ['--socket', ''], ['--socket', '0'], ['--socket', 'Bad'],
     ['--socket', 'a-'], ['--socket', '../socket'], ['--socket', 'a'.repeat(33)]]) {
     await assert.rejects(run(...args), /Socket name/);

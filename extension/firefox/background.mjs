@@ -9,6 +9,7 @@ import { commands as wait } from '../shared/wait.mjs';
 import { commands as get } from '../shared/get-element.mjs';
 import { captureOptions, captureResponse, validateCapture } from '../shared/capture-jpeg.mjs';
 import { handleFeedback, invalidateFeedback, takeFeedback } from '../shared/feedback.mjs';
+import { forgetWorkspaceWindow, manageOwnedTab, openBackgroundTab } from '../shared/tab-lifecycle.mjs';
 import { createFirefoxFrameScope, hasDocumentId, hasFrameApis, injectDocument, navigationEvents, unavailable } from './frame-read.mjs';
 
 const browser = globalThis.browser;
@@ -131,6 +132,7 @@ browser.runtime.onMessage.addListener((message, sender) => {
   }).catch((error) => ({ error: error.message }));
 });
 
+browser.windows?.onRemoved?.addListener((id) => forgetWorkspaceWindow(bridge, id));
 browser.tabs.onRemoved.addListener((id) => {
   invalidateFeedback(bridge, id);
   if (id === selected?.id) release();
@@ -387,6 +389,8 @@ async function runCapture(connection, workspace, s, terms, setBeforeReply) {
 
 async function command(connection, args, setBeforeReply) {
   if (!Array.isArray(args) || !args.length || !args.every((arg) => typeof arg === 'string')) throw new Error('Invalid command');
+  const assertBridge = () => { if (bridge !== connection) throw new Error('Bridge stopped'); };
+  assertBridge();
   const named = args[0] === '--session';
   const id = named ? args[1] : undefined;
   const { workspaces } = connection;
@@ -425,17 +429,17 @@ async function command(connection, args, setBeforeReply) {
       return url && info(tab, url);
     }))).filter(Boolean);
   }
+  const owner = workspace ?? connection;
+  if (verb === 'tab-show' || verb === 'tab-close' || verb === 'tab-navigate') {
+    return manageOwnedTab(browser, verb, terms,
+      (tabId) => (!workspace || workspaces.get(id) === workspace) && owner.ownedTabs.has(tabId), assertBridge,
+      async (tabId) => { if (selected?.id === tabId) release(); });
+  }
   if (verb === 'open' && terms.length === 1) {
     const url = webUrl(terms[0]);
     if (!await hasHostAccess(browser.permissions, url)) throw new Error('Firefox has not granted access to this site');
-    const window = await browser.windows.getLastFocused({ windowTypes: ['normal'] }).catch(() => null);
-    if (bridge !== connection) throw new Error('Bridge stopped');
-    if (window?.type !== 'normal' || window.incognito || !Number.isInteger(window.id)) {
-      throw new Error('Open a normal Firefox window before opening a VABU background tab');
-    }
-    const tab = await browser.tabs.create({ windowId: window.id, url: url.href, active: false });
-    if (bridge !== connection) throw new Error('Bridge stopped');
-    const owner = workspace ?? connection;
+    const tab = await openBackgroundTab(browser, owner, url, assertBridge, 'Firefox');
+    assertBridge();
     owner.ownedTabs.add(tab.id);
     const group = await groupNewTab(owner, tab).catch((error) => {
       if (workspace) throw new Error(`Tab ${tab.id} opened, but grouping failed: ${error.message}`);

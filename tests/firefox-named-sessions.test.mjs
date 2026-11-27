@@ -1,7 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-const event = () => ({ addListener(fn) { this.fire = fn; } });
+const event = () => {
+  const listeners = new Set();
+  return {
+    addListener: fn => listeners.add(fn), removeListener: fn => listeners.delete(fn),
+    fire(...args) { let result; for (const fn of listeners) result = fn(...args); return result; },
+  };
+};
 
 test('Firefox named sessions isolate selection, ownership and safe group reuse', async () => {
   const url = 'https://example.test/';
@@ -25,10 +31,19 @@ test('Firefox named sessions isolate selection, ownership and safe group reuse',
     storage: { local: { async get() { return {}; } } },
     action: { async setBadgeText() {}, async setIcon() {} },
     permissions: { onRemoved: event(), async contains() { return granted; }, async getAll() { return { origins: ['<all_urls>'] }; } },
-    windows: { async getLastFocused(options) {
-      assert.deepEqual(options, { windowTypes: ['normal'] });
-      return { id: windowId, type: 'normal', incognito: !windowId };
-    } },
+    windows: {
+      onRemoved: event(),
+      async getLastFocused(options) {
+        assert.deepEqual(options, { windowTypes: ['normal'] });
+        return { id: windowId, type: 'normal', incognito: !windowId };
+      },
+      async get(id) { return { id, type: 'normal', incognito: false }; },
+      async update(id, options) {
+        assert.deepEqual(options, { focused: true });
+        windowId = id;
+        return { ...await this.get(id), focused: true };
+      },
+    },
     scripting: { async executeScript({ target, files }) {
       assert.deepEqual(target.frameIds, [0]);
       assert.deepEqual(files, ['firefox/content.js']);
@@ -37,9 +52,24 @@ test('Firefox named sessions isolate selection, ownership and safe group reuse',
     tabs: {
       onUpdated: event(), onRemoved: event(),
       async get(id) { return tabs.get(id); },
-      async query({ groupId }) { return [...tabs.values()].filter(tab => groupId === undefined || groupId === tab.groupId); },
+      async query({ groupId, windowId }) {
+        return [...tabs.values()].filter(tab =>
+          (groupId === undefined || groupId === tab.groupId) && (windowId === undefined || windowId === tab.windowId));
+      },
+      async update(id, options) {
+        const target = tabs.get(id);
+        if (options.url) { target.url = options.url; return target; }
+        assert.deepEqual(options, { active: true });
+        for (const sibling of tabs.values()) if (sibling.windowId === target.windowId) sibling.active = sibling === target;
+        return target;
+      },
+      async remove(id) {
+        tabs.delete(id);
+        this.onRemoved.fire(id);
+      },
       async create(options) {
-        assert.deepEqual(options, { url, windowId, active: false });
+        assert.equal(options.url, url);
+        assert.equal(options.active, false);
         const tab = { id: ++nextTab, ...options, status: 'complete' };
         tabs.set(tab.id, tab);
         return tab;
@@ -101,9 +131,10 @@ test('Firefox named sessions isolate selection, ownership and safe group reuse',
     windowId = 2;
     const elsewhere = await run(...A, 'open', url);
     assert.equal(first.group, sibling.group);
-    assert.equal(new Set([first.group, second.group, regular.group, elsewhere.group]).size, 4);
+    assert.equal(first.group, elsewhere.group);
+    assert.equal(tabs.get(elsewhere.tab).windowId, 1);
+    assert.equal(new Set([first.group, second.group, regular.group]).size, 3);
     assert.deepEqual(groups.get(first.group), { windowId: 1, title: 'Checkout', color: 'purple' });
-    assert.deepEqual(groups.get(elsewhere.group), { windowId: 2, title: 'Checkout', color: 'purple' });
     assert.equal(groups.get(regular.group).title, 'VABU');
     // A manually moved foreign tab makes the old group unsafe to reuse.
     tabs.get(second.tab).groupId = first.group;
@@ -139,6 +170,12 @@ test('Firefox named sessions isolate selection, ownership and safe group reuse',
     assert.deepEqual(await run(...A, 'session-end'), { ended: true });
     await fails(/Unknown VABU session ID/, ...A, 'tabs');
     assert.deepEqual(await run(...B, 'snapshot'), { tabId: second.tab });
+    await fails(/not owned/, ...B, 'tab-navigate', String(tab.id), url);
+    assert.deepEqual(await run('tab-navigate', String(regular.tab), url), { tab: regular.tab, requested: true });
+    assert.equal((await run(...B, 'status')).tab, second.tab);
+    assert.deepEqual(await run(...B, 'tab-navigate', String(second.tab), url), { tab: second.tab, requested: true });
+    assert.equal((await run(...B, 'status')).tab, null);
+    await run(...B, 'use', String(second.tab));
     browser.tabs.onUpdated.fire(second.tab, { status: 'loading' }); // Includes same-URL reloads.
     assert.equal((await run(...B, 'session-status')).tab, null);
     await fails(/Select an allowed Firefox tab/, ...B, 'snapshot');
@@ -152,8 +189,19 @@ test('Firefox named sessions isolate selection, ownership and safe group reuse',
     assert.deepEqual(await run(...B, 'session-end'), { ended: true });
     assert.deepEqual(actions.at(-1), [second.tab, 'disconnect']);
     assert.equal(tabs.size, 7);
-    assert.equal(groups.size, 5);
+    assert.equal(groups.size, 4);
     assert.deepEqual([...tabs.values()].filter(tab => tab.active).map(tab => tab.id), [tab.id]);
+    await fails(/not owned/, 'tab-close', String(second.tab)); // Ended session tabs are no longer owned.
+    await fails(/not owned/, 'tab-show', String(tab.id));
+    windowId = 2;
+    assert.deepEqual(await run('tab-show', String(regular.tab)),
+      { tab: regular.tab, window: 1, active: true, focused: true });
+    assert.equal(windowId, 1);
+    assert.equal((await run('status')).tab, null);
+    await fails(/active or pinned/, 'tab-close', String(regular.tab));
+    const unused = await run('open', url);
+    assert.deepEqual(await run('tab-close', String(unused.tab)), { tab: unused.tab, closed: true });
+    await fails(/not owned/, 'tab-close', String(unused.tab));
     await run('use', String(second.tab)); // Ending a session does not permanently claim its tabs.
     const c = await run('session-start', 'Temporary');
     assert.deepEqual(await popup('stop'), { ok: true });

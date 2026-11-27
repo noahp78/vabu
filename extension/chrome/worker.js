@@ -15,6 +15,7 @@ import { captureOwnedViewport } from './owned-capture.mjs';
 import { captureOptions, captureResponse } from '../shared/capture-jpeg.mjs';
 import { createOwnedDialog } from './owned-dialog.mjs';
 import { handleFeedback, invalidateFeedback, takeFeedback } from '../shared/feedback.mjs';
+import { forgetWorkspaceWindow, manageOwnedTab, openBackgroundTab } from '../shared/tab-lifecycle.mjs';
 
 const adapterCommands = { __proto__: null, ...interaction, ...inspection, ...integrations, ...elementCommands, ...waitCommands, ...scopedCommands, ...findCommands };
 for (const verb of ['url', 'tab-info', 'session-start', 'session-handoff', 'session-restore', ...browserWideCommands]) {
@@ -358,6 +359,7 @@ function forgetTab(tabId) {
   if (session?.id === tabId) void detach(session);
 }
 
+chrome.windows?.onRemoved?.addListener((id) => forgetWorkspaceWindow(bridge, id));
 chrome.tabs.onRemoved.addListener(forgetTab);
 chrome.tabs.onReplaced?.addListener((_added, removed) => forgetTab(removed));
 
@@ -393,8 +395,8 @@ navigation?.onErrorOccurred?.addListener(({ tabId, frameId }) => {
     if (session?.id === tabId) invalidateOwnedDocument(session);
   }
 });
-chrome.tabs.onUpdated.addListener((tabId, { status, url, discarded }) => {
-  if (status === 'loading' || url !== undefined || discarded) invalidateDocument({ tabId });
+chrome.tabs.onUpdated.addListener((tabId, { status, url, discarded, pendingUrl }) => {
+  if (status === 'loading' || url !== undefined || discarded || pendingUrl) invalidateDocument({ tabId });
   const s = session;
   if (status === 'complete' && s?.ready && !s.userDocument && s.id === tabId && !s.modalOpen) void page(s, 'show').catch(() => {});
 });
@@ -1075,7 +1077,8 @@ async function runFrameCommand(connection, verb, args, setBeforeReply) {
 
 async function command(connection, args, setBeforeReply) {
   if (!Array.isArray(args) || !args.every((arg) => typeof arg === 'string')) throw new Error('Invalid command');
-  if (bridge !== connection) throw new Error('Bridge stopped');
+  const assertBridge = () => { if (bridge !== connection) throw new Error('Bridge stopped'); };
+  assertBridge();
   const [scope, id] = args;
   const workspaces = connection.workspaces;
   const scoped = scope === '--session';
@@ -1115,17 +1118,18 @@ async function command(connection, args, setBeforeReply) {
     const tabs = await chrome.tabs.query({});
     return (await Promise.all(tabs.filter(({ id }) => !workspace || workspace.tabs.has(id)).map(tabInfo))).filter(Boolean);
   }
+  if (verb === 'tab-show' || verb === 'tab-close' || verb === 'tab-navigate') {
+    const owns = (tabId) => workspace ? workspaces.get(id) === workspace && connection.ownedTabs.has(tabId) && workspace.tabs.has(tabId)
+      : connection.ownedTabs.has(tabId) && ![...workspaces.values()].some(({ tabs }) => tabs.has(tabId));
+    return manageOwnedTab(chrome, verb, args.slice(1), owns, assertBridge, async (tabId) => {
+      if (session?.id === tabId) await detach(session);
+    });
+  }
   if (verb === 'open' && count === 1) {
     const url = webUrl(a);
     if (!await hasHostAccess(chrome.permissions, url)) throw new Error('Chrome has not granted access to this site');
-    // A newly opened window cannot have an inactive first tab. Target an existing tab strip.
-    const window = await chrome.windows.getLastFocused({ windowTypes: ['normal'] }).catch(() => null);
-    if (bridge !== connection) throw new Error('Bridge stopped');
-    if (window?.type !== 'normal' || window.incognito || !Number.isInteger(window.id)) {
-      throw new Error('Open a normal Chromium window before opening a VABU background tab');
-    }
-    const tab = await chrome.tabs.create({ windowId: window.id, url: url.href, active: false });
-    if (bridge !== connection) throw new Error('Bridge stopped');
+    const tab = await openBackgroundTab(chrome, workspace ?? connection, url, assertBridge, 'Chromium');
+    assertBridge();
     connection.ownedTabs.add(tab.id);
     workspace?.tabs.add(tab.id);
     const group = await groupNewTab(tab, workspace, connection).catch((error) => {

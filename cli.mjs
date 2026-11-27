@@ -13,6 +13,8 @@ const usage = `vabu setup [OPTIONS]           Set up the local browser extension
 vabu status | tabs | use TAB_ID | release
 vabu [--session ID] feedback   Read and clear submitted page comments
 vabu open URL                  Open a background tab; run use TAB_ID before wait or snapshot
+vabu [--session ID] tab-navigate TAB_ID URL [--wait-load]
+vabu [--session ID] tab-show TAB_ID | tab-close TAB_ID [--wait-load]
 vabu snapshot                  Page text and control references
 vabu --pretty COMMAND ...      Indent JSON for human readers (default: compact)
 vabu [--pretty|--compact] [--socket NAME] [--session ID] COMMAND ...

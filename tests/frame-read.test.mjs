@@ -48,7 +48,7 @@ test('Chrome frame reads, viewport captures and dialogs stay within the verified
         assert.deepEqual(options, { active: true, currentWindow: true });
         return [...tabs.values()].filter(tab => tab.active);
       },
-      async create({ url }) { const tab = { url, id: tabs.size + 1, status: 'complete' }; tabs.set(tab.id, tab); return tab; } },
+      async create({ url, windowId }) { const tab = { url, windowId, id: tabs.size + 1, status: 'complete' }; tabs.set(tab.id, tab); return tab; } },
     tabGroups: { async update() {} },
     webNavigation: {
       onBeforeNavigate: event(), onCommitted: event(), onHistoryStateUpdated: event(), onReferenceFragmentUpdated: event(), onErrorOccurred: event(),

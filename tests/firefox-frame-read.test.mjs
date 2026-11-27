@@ -39,7 +39,7 @@ test('Firefox binds frame reads and screenshots to the owned, selected document 
       },
       async getAllFrames() { return [...frames.values()]; },
     }),
-    tabs: { onRemoved: event(), onUpdated: event(), async get(id) { return tab(id); }, async create() { return tab(2); },
+    tabs: { onRemoved: event(), onUpdated: event(), async get(id) { return tab(id); }, async create({ windowId }) { return { ...tab(2), windowId }; },
       captureVisibleTab: assert.fail, update: assert.fail,
       async query(options) {
         assert.deepEqual(options, { active: true, currentWindow: true });
