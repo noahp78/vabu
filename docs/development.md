@@ -21,6 +21,7 @@ The packagers accept one optional output directory. Its parent must exist and th
 | `extension/firefox/` | Firefox manifest, background script and generated-content entry point |
 | `extension/shared/` | Browser-neutral page operations, popup and icons |
 | `extension/stage.mjs` | Explicit build inventory and destination handling |
+| `docs/browser-instructions.md` | Source for the guide packaged as `shared/browser-instructions.md` in both builds |
 | `tests/` | Node tests, browser mocks and isolated live fixtures |
 
 ## Release artifacts

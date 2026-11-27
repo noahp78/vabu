@@ -20,7 +20,7 @@ test('Firefox named sessions isolate selection, ownership and safe group reuse',
   let granted = true;
   let native;
   globalThis.browser = {
-    runtime: { onMessage: event(), getURL: () => 'popup', connectNative: () => native = {
+    runtime: { onMessage: event(), getURL: () => 'popup', getManifest: () => ({ version: '1.2.3' }), connectNative: () => native = {
       onMessage: event(), onDisconnect: event(), disconnect() {}, postMessage(message) {
         if (message.type === 'configure') {
           assert.equal(message.socketName, 'firefox-default');
@@ -110,6 +110,18 @@ test('Firefox named sessions isolate selection, ownership and safe group reuse',
     async function fails(pattern, ...args) {
       assert.match((await send(...args)).error, pattern);
     }
+    const originalFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = async url => {
+        assert.equal(url.href, new URL('../extension/shared/browser-instructions.md', import.meta.url).href);
+        return new Response('# Built-in instructions');
+      };
+      assert.deepEqual(await run('instructions'), { browser: 'firefox', version: '1.2.3', instructions: '# Built-in instructions' });
+      await fails(/no arguments/, 'instructions', 'extra');
+      const scope = await run('session-start', 'Instructions test');
+      await fails(/cannot be scoped/, '--session', scope.sessionId, 'instructions');
+      await run('--session', scope.sessionId, 'session-end');
+    } finally { globalThis.fetch = originalFetch; }
     await fails(/session name/, 'session-start', 'x\u200B');
     await fails(/Unknown VABU session ID/, '--session', 'unknown', 'status');
     const a = await run('session-start', ' Checkout ');

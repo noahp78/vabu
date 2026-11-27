@@ -10,6 +10,7 @@ import { commands as get } from '../shared/get-element.mjs';
 import { captureOptions, captureResponse, validateCapture } from '../shared/capture-jpeg.mjs';
 import { feedbackCount, handleFeedback, invalidateFeedback, listFeedback, takeFeedback } from '../shared/feedback.mjs';
 import { forgetWorkspaceWindow, manageOwnedTab, openBackgroundTab, watchManagedGroup } from '../shared/tab-lifecycle.mjs';
+import { browserInstructions } from '../shared/browser-instructions.mjs';
 import { createEvalApproval } from '../shared/eval.mjs';
 import { navigationTiming } from '../shared/navigation-timing.mjs';
 import { createFirefoxFrameScope, hasDocumentId, hasFrameApis, injectDocument, navigationEvents, unavailable } from './frame-read.mjs';
@@ -445,6 +446,11 @@ async function command(connection, args, setBeforeReply) {
   const workspace = workspaces.get(id);
   if (named && !workspace) throw new Error('Unknown VABU session ID');
   const [verb, ...terms] = named ? args.slice(2) : args;
+  if (verb === 'instructions') {
+    if (named || terms.length) throw new Error('instructions takes no arguments and cannot be scoped');
+    setBeforeReply(undefined, assertBridge);
+    return browserInstructions(browser.runtime, 'firefox', assertBridge);
+  }
   if (verb === 'feedback') return takeFeedback(workspace ?? connection, terms);
   if (!named && verb === 'session-start' && terms.length === 1) {
     const name = terms[0].trim();

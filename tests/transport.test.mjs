@@ -55,6 +55,10 @@ test('native hosts bind only after configuration and route CLI calls to distinct
   }
   const run = (...args) => exec(process.execPath, [cli, ...args], { env, timeout: 4000 });
 
+  const help = (await run('help')).stdout;
+  assert.match(help, /instructions/);
+  assert.match(help, /offline/);
+
   const waiting = host();
   const firstFrame = waiting.next();
   assert.equal(await Promise.race([firstFrame, delay(125, 'waiting')]), 'waiting');
@@ -125,6 +129,12 @@ test('native hosts bind only after configuration and route CLI calls to distinct
     profiles[2][0].send({ id, value });
     assert.deepEqual(JSON.parse((await output).stdout), value);
   }
+  const instructions = run('--socket', 'firefox-default', 'instructions');
+  const { id, args } = await profiles[1][0].next();
+  assert.deepEqual(args, ['instructions']);
+  const guide = { browser: 'firefox', version: '0.5.0', instructions: '# Browser instructions' };
+  profiles[1][0].send({ id, value: guide });
+  assert.deepEqual(JSON.parse((await instructions).stdout), guide);
   for (const args of [['--socket'], ['--socket', ''], ['--socket', '0'], ['--socket', 'Bad'],
     ['--socket', 'a-'], ['--socket', '../socket'], ['--socket', 'a'.repeat(33)]]) {
     await assert.rejects(run(...args), /Socket name/);

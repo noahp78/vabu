@@ -40,7 +40,7 @@ test('named sessions group their own tabs and reject commands targeting another 
         return { ...normalWindow, focused: true };
       },
     },
-    runtime: { onMessage: event(), onConnect: event(), getURL: () => 'popup', connectNative: () => port },
+    runtime: { onMessage: event(), onConnect: event(), getURL: () => 'popup', getManifest: () => ({ version: '1.2.3' }), connectNative: () => port },
     storage: { local: { async get() { return {}; } }, session: { async set() {} } },
     action: { async setBadgeText() {}, async setIcon() {} },
     permissions: { onRemoved: event(), async contains() { return true; }, async getAll() { return {}; } },
@@ -120,6 +120,18 @@ test('named sessions group their own tabs and reject commands targeting another 
       await port.onMessage.fire({ id: 'fixture', args });
       return port.reply.error ?? port.reply.value;
     }
+    const originalFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = async url => {
+        assert.equal(url.href, new URL('../extension/shared/browser-instructions.md', import.meta.url).href);
+        return new Response('# Built-in instructions');
+      };
+      assert.deepEqual(await run('instructions'), { browser: 'chrome', version: '1.2.3', instructions: '# Built-in instructions' });
+      assert.match(await run('instructions', 'extra'), /no arguments/);
+      const scope = await run('session-start', 'Instructions test');
+      assert.match(await run('--session', scope.sessionId, 'instructions'), /cannot be scoped/);
+      await run('--session', scope.sessionId, 'session-end');
+    } finally { globalThis.fetch = originalFetch; }
     const savedWindow = normalWindow;
     normalWindow = { id: 2, type: 'app', incognito: false };
     assert.match(await run('open', 'https://example.test/'), /normal Chromium window/);

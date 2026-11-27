@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { cp, mkdtemp, readFile, readdir, rm, symlink } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, readdir, rm, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, posix } from 'node:path';
 import test from 'node:test';
@@ -28,7 +28,10 @@ for (const browser of ['chrome', 'firefox']) {
     const temp = await mkdtemp(join(tmpdir(), 'vabu-stage-'));
     t.after(() => rm(temp, { recursive: true, force: true }));
     const source = join(temp, 'checkout', 'extension');
+    const guide = join(temp, 'checkout', 'docs', 'browser-instructions.md');
     await cp(new URL('../extension/', import.meta.url), source, { recursive: true });
+    await mkdir(join(temp, 'checkout', 'docs'));
+    await cp(new URL('../docs/browser-instructions.md', import.meta.url), guide);
     const alias = join(temp, 'source-alias');
     await symlink(source, alias, 'dir');
     const entry = join(alias, browser, 'package.mjs');
@@ -60,12 +63,14 @@ for (const browser of ['chrome', 'firefox']) {
           assert.ok(ref.startsWith('./') || ref.startsWith('../'), `non-relative import: ${ref}`);
           local(ref);
         }
+        for (const [, ref] of source.matchAll(/new URL\(['"](\.\.?\/[^'"]+)['"],\s*import\.meta\.url\)/g)) local(ref);
         assert.doesNotMatch(source, /\bimport\s*\(/);
         if (path.startsWith('shared/')) {
           assert.doesNotMatch(source, /\b(?:createFrameScope|captureOwnedViewport|createOwnedDialog)\b/);
         }
       }
     }
+    assert.deepEqual(staged.get('shared/browser-instructions.md'), await readFile(guide));
     assert.equal(manifest.permissions.includes('debugger'), !firefox);
     assert.equal(manifest.web_accessible_resources, undefined);
     assert.equal(manifest.action.default_popup, 'shared/popup.html');

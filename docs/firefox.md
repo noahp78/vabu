@@ -12,7 +12,7 @@ The destination must not exist. The **root of the staged extension** is `dist/fi
 | Staged path | Source |
 | --- | --- |
 | `manifest.json` | `extension/firefox/manifest.json` (copied verbatim) |
-| `shared/` | Runtime modules, popup, SVG logo and PNG toolbar icons from `extension/shared/` |
+| `shared/` | Runtime modules, popup, SVG logo and PNG toolbar icons from `extension/shared/`, plus the packaged [browser instructions](browser-instructions.md) |
 | `firefox/background.mjs`, `firefox/frame-read.mjs` | Same names from `extension/firefox/` |
 | `firefox/content.js` | Generated classic isolated-world script: `install` from `content.mjs` plus the shared in-page interaction, inspection, scoped snapshot, text wait, and element read functions; no runtime eval or web-accessible module |
 

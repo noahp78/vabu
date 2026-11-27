@@ -1,6 +1,6 @@
 # Install and configure
 
-VABU supports Linux and macOS with Node.js 22 or newer. Chrome and Chromium require version 124 or newer. See [Firefox](firefox.md) for version and signing limits. The extension and CLI must come from the same build.
+VABU supports Linux and macOS with Node.js 22 or newer. Chrome and Chromium require version 124 or newer. See [Firefox](firefox.md) for version and signing limits. Use a matching release for initial installation. Browser instructions ship with the extension; new browser-side commands need no CLI or native-host update when the bridge protocol and any required client-side options are unchanged.
 
 ## Install from a release
 
@@ -30,7 +30,7 @@ The direct `install.mjs` command defaults to Google Chrome on macOS and Chromium
 
 For Firefox, run `node extension/firefox/package.mjs`, temporarily load `dist/firefox/manifest.json`, and register the bridge with `node install.mjs --firefox`. Firefox requires manual bridge startup. See the [Firefox guide](firefox.md).
 
-On Chrome, open VABU from the Extensions menu. The bridge starts automatically; use **Start local bridge** if the first attempt failed. **Stop local bridge** also suppresses automatic restart for the rest of the Chrome session. The optional Pi [skill](../SKILL.md) is not required for the CLI.
+On Chrome, open VABU from the Extensions menu. The bridge starts automatically; use **Start local bridge** if the first attempt failed. **Stop local bridge** also suppresses automatic restart for the rest of the Chrome session. The optional Pi [skill](../SKILL.md) is not required for the CLI. It fetches guidance from the loaded extension with `vabu --socket NAME instructions`; you do not need to reinstall it for each browser update. If a bridge does not recognize `instructions`, reload or update that profile’s extension.
 
 ## Upgrade or migrate an unpacked installation
 

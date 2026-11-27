@@ -16,6 +16,7 @@ import { captureOptions, captureResponse } from '../shared/capture-jpeg.mjs';
 import { createOwnedDialog } from './owned-dialog.mjs';
 import { feedbackCount, handleFeedback, invalidateFeedback, listFeedback, takeFeedback } from '../shared/feedback.mjs';
 import { forgetWorkspaceWindow, manageOwnedTab, openBackgroundTab, watchManagedGroup } from '../shared/tab-lifecycle.mjs';
+import { browserInstructions } from '../shared/browser-instructions.mjs';
 import { createEvalApproval } from '../shared/eval.mjs';
 import { navigationTiming } from '../shared/navigation-timing.mjs';
 
@@ -1217,6 +1218,11 @@ async function command(connection, args, setBeforeReply) {
   if (scoped) args = args.slice(2);
   const [verb, a, b] = args;
   const count = args.length - 1;
+  if (verb === 'instructions') {
+    if (scoped || count !== 0) throw new Error('instructions takes no arguments and cannot be scoped');
+    setBeforeReply(async () => {}, assertBridge);
+    return browserInstructions(chrome.runtime, 'chrome', assertBridge);
+  }
   if (verb === 'feedback') return takeFeedback(workspace ?? connection, args.slice(1));
   if (!scoped && verb === 'session-start' && count === 1) {
     const name = a.trim();
