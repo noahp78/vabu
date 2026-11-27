@@ -10,6 +10,7 @@ import { commands as get } from '../shared/get-element.mjs';
 import { captureOptions, captureResponse, validateCapture } from '../shared/capture-jpeg.mjs';
 import { handleFeedback, invalidateFeedback, takeFeedback } from '../shared/feedback.mjs';
 import { forgetWorkspaceWindow, manageOwnedTab, openBackgroundTab } from '../shared/tab-lifecycle.mjs';
+import { navigationTiming } from '../shared/navigation-timing.mjs';
 import { createFirefoxFrameScope, hasDocumentId, hasFrameApis, injectDocument, navigationEvents, unavailable } from './frame-read.mjs';
 
 const browser = globalThis.browser;
@@ -333,10 +334,13 @@ async function runFrameCommand(connection, workspace, s, verb, terms, setBeforeR
   }
 }
 
-function ownedDocumentScope(connection, workspace, s, screenshot = false) {
+function ownedDocumentScope(connection, workspace, s, feature) {
+  const screenshot = feature === 'screenshots';
   const owner = workspace ?? connection;
   if (!s || !owner.ownedTabs.has(s.id)) throw new Error('Select a tab opened by VABU in this bridge and workspace first');
-  if (!frameApis || !s.documentId) throw new Error('Firefox screenshots require verified document IDs (Firefox 153+)');
+  if (!frameApis || !s.documentId) {
+    throw new Error(`Firefox ${feature} require verified document IDs (Firefox 153+)`);
+  }
   const { id, documentId, href, origin } = s;
   const changed = () => new Error('Cannot verify the selected Firefox document; use the tab again');
   // Existing tab, root navigation, port and permission listeners permanently
@@ -371,7 +375,7 @@ function ownedDocumentScope(connection, workspace, s, screenshot = false) {
 
 async function runCapture(connection, workspace, s, terms, setBeforeReply) {
   const options = captureOptions(terms);
-  const { id, documentId, verify, assertCurrent } = ownedDocumentScope(connection, workspace, s, true);
+  const { id, documentId, verify, assertCurrent } = ownedDocumentScope(connection, workspace, s, 'screenshots');
   await verify();
   assertCurrent();
   if (typeof browser.tabs.captureTab !== 'function') throw new Error('Firefox tab-ID capture is unavailable');
@@ -463,6 +467,33 @@ async function command(connection, args, setBeforeReply) {
   if (s && s.workspace !== workspace) throw new Error('Select a tab for this VABU session with use TAB_ID');
   if (verb === 'frame-list' || verb === 'frame-read' || isFrameInspection(verb, terms)) {
     return runFrameCommand(connection, workspace, s, verb, terms, setBeforeReply);
+  }
+  if (verb === 'url' || verb === 'tab-info') {
+    if (terms.length) throw new Error(`Usage: vabu ${verb}`);
+    const scope = s?.documentId ? ownedDocumentScope(connection, workspace, s, 'metadata') : null;
+    const verify = scope ? scope.verify : () => current(s);
+    const assertCurrent = scope ? scope.assertCurrent : () => {
+      if (bridge !== connection || selected !== s) throw new Error('Selected document changed or was released');
+    };
+    await verify();
+    const tab = await browser.tabs.get(s.id);
+    const checked = await verify();
+    assertCurrent();
+    const value = verb === 'url' ? s.href : { tab: checked.tab, origin: checked.origin, window: tab.windowId, active: checked.active };
+    setBeforeReply(verify, assertCurrent);
+    return value;
+  }
+  if (verb === 'js') {
+    if (terms.length !== 1 || terms[0] !== 'timing') throw new Error('Usage: vabu js timing');
+    const scope = ownedDocumentScope(connection, workspace, s, 'navigation timing');
+    await scope.verify();
+    const value = await injectDocument(browser, scope.id, { documentId: scope.documentId, frameId: 0 }, {
+      func: navigationTiming, args: [scope.href],
+    });
+    if (!value) throw new Error('Navigation timing unavailable for this document');
+    await scope.verify();
+    setBeforeReply(scope.verify, scope.assertCurrent);
+    return value;
   }
   if (verb === 'screenshot') return runCapture(connection, workspace, s, terms, setBeforeReply);
   const findTicket = verb === 'find' ? crypto.randomUUID() : undefined;

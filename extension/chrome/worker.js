@@ -16,6 +16,7 @@ import { captureOptions, captureResponse } from '../shared/capture-jpeg.mjs';
 import { createOwnedDialog } from './owned-dialog.mjs';
 import { handleFeedback, invalidateFeedback, takeFeedback } from '../shared/feedback.mjs';
 import { forgetWorkspaceWindow, manageOwnedTab, openBackgroundTab } from '../shared/tab-lifecycle.mjs';
+import { navigationTiming } from '../shared/navigation-timing.mjs';
 
 const adapterCommands = { __proto__: null, ...interaction, ...inspection, ...integrations, ...elementCommands, ...waitCommands, ...scopedCommands, ...findCommands };
 for (const verb of ['url', 'tab-info', 'session-start', 'session-handoff', 'session-restore', ...browserWideCommands]) {
@@ -959,12 +960,7 @@ async function runDebug(connection, verb, args, setBeforeReply) {
   await scope.verify();
   if (verb === 'js') {
     const [result] = await chrome.scripting.executeScript({ target: { tabId: s.id, documentIds: [scope.parent.documentId] },
-      world: 'ISOLATED', args: [scope.parent.url], func: function navigationTiming(href) {
-        if (window !== window.top || location.href !== href) return null;
-        const nav = performance.getEntriesByType('navigation')[0];
-        return nav ? { type: nav.type, responseStart: nav.responseStart, domInteractive: nav.domInteractive,
-          domContentLoaded: nav.domContentLoadedEventEnd, load: nav.loadEventEnd } : null;
-      } });
+      world: 'ISOLATED', args: [scope.parent.url], func: navigationTiming });
     if (result?.documentId !== scope.parent.documentId || result.frameId !== 0 || !result.result) {
       throw new Error('Navigation timing unavailable for this document');
     }

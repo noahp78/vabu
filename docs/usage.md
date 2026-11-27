@@ -25,7 +25,11 @@ Open a tab with `vabu open URL`, then select it with `vabu use TAB_ID`. Keep the
 - `vabu console start` records without reloading. It cannot promise the complete console history.
 - `vabu console read` returns up to 100 recent console entries and uncaught exceptions from the top-level page at the selected origin, with a count of dropped entries. It does not include iframe, worker or browser network messages. Logs can contain sensitive data.
 - `vabu console stop` stops recording and clears the buffer. Releasing the tab, losing authorization, or leaving the selected origin also ends recording.
-- `vabu js timing` runs a bundled JavaScript diagnostic in the selected document and returns navigation timing milestones in milliseconds. It does not accept JavaScript source or arbitrary expressions.
+
+### Navigation timing in Chromium and Firefox
+
+`vabu js timing` returns navigation timing milestones in milliseconds for a selected, verified VABU-opened tab. It works in Chromium and Firefox 153+. It uses a bundled diagnostic. Console recording remains Chromium-only.
+
 
 ## Page feedback
 

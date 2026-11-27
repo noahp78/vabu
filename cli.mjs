@@ -43,7 +43,7 @@ vabu [--session ID] screenshot [NEW_FILE.png|jpg] [--if-changed | --threshold 0-
     Owned tab viewport, including visible iframe pixels (Firefox requires popup opt-in)
 vabu [--session ID] inspect-dialog show | accept ID | dismiss ID  Owned Chrome tabs only
 vabu [--session ID] console start | reload | read | stop        Owned Chrome tabs only
-vabu [--session ID] js timing                                  Owned Chrome tabs only
+vabu [--session ID] js timing                                  Owned Chrome and Firefox 153+ tabs
 vabu cursor-move TARGET | mouse-click BUTTON MODIFIERS TARGET | double-click TARGET
 vabu drag X1 Y1 X2 Y2 | wheel DX DY [TARGET] | keypress CHORD
 vabu insert-text TEXT | fill @rN TEXT | select-option @rN VALUE | set-checked @rN true|false

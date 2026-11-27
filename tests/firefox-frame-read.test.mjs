@@ -18,7 +18,13 @@ test('Firefox binds frame reads and screenshots to the owned, selected document 
   const injected = [];
   let ownedSelection = true, captureGrant = false, captureCalls = 0, onCapture, onProbe, badJpeg = false;
   let active = false, activeTabId = 2, feedbackToken;
-  const tab = (id) => ({ id, url: top.url, status: 'complete', active: active && id === activeTabId });
+  let rootGranted = true, afterTiming, onGroupQuery;
+  const timing = { type: 'navigate', responseStart: 1, domInteractive: 2, domContentLoaded: 3, load: 4 };
+  const tabGroups = new Map();
+  const membership = new Map();
+  let ownedWindow = 1;
+  const tab = (id) => ({ id, url: top.url, status: 'complete', windowId: id === 2 ? ownedWindow : 1,
+    groupId: membership.get(id) ?? -1, active: active && id === activeTabId });
   globalThis.browser = {
     runtime: { id: 'vabu-test', onMessage: event(), getURL: () => 'popup', connectNative: () => native = {
       onMessage: event(), onDisconnect: event(), disconnect() {}, postMessage(message) {
@@ -29,7 +35,7 @@ test('Firefox binds frame reads and screenshots to the owned, selected document 
     storage: { local: { async get() { return {}; } } },
     action: { async setBadgeText() {}, async setIcon() {} },
     permissions: { onRemoved: event(), async contains({ origins }) {
-      return origins.every((origin) => origin === '<all_urls>' ? captureGrant : childGranted || !origin.includes('child.example'));
+      return origins.every((origin) => origin === '<all_urls>' ? captureGrant : origin.includes('child.example') ? childGranted : rootGranted);
     } },
     windows: { async getLastFocused() { return { id: 1, type: 'normal' }; } },
     webNavigation: Object.assign(nav, {
@@ -39,9 +45,23 @@ test('Firefox binds frame reads and screenshots to the owned, selected document 
       },
       async getAllFrames() { return [...frames.values()]; },
     }),
+    tabGroups: { async get(id) { return tabGroups.get(id); }, async update(id, values) { Object.assign(tabGroups.get(id), values); } },
     tabs: { onRemoved: event(), onUpdated: event(), async get(id) { return tab(id); }, async create({ windowId }) { return { ...tab(2), windowId }; },
+      async group({ groupId, tabIds, createProperties }) {
+        if (groupId === undefined) {
+          groupId = tabGroups.size + 1;
+          tabGroups.set(groupId, { id: groupId, windowId: createProperties.windowId });
+        }
+        for (const id of tabIds) membership.set(id, groupId);
+        return groupId;
+      },
       captureVisibleTab: assert.fail, update: assert.fail,
       async query(options) {
+        if ('groupId' in options) {
+          const snapshot = [tab(1), tab(2)].filter(entry => entry.groupId === options.groupId);
+          await onGroupQuery?.();
+          return snapshot;
+        }
         assert.deepEqual(options, { active: true, currentWindow: true });
         return [tab(activeTabId)];
       },
@@ -71,9 +91,14 @@ test('Firefox binds frame reads and screenshots to the owned, selected document 
       let result;
       if (func?.name === 'func') {
         assert.equal(frame.frameId, 0);
-        assert.deepEqual(args, ['https://parent.example', top.url]);
+        assert.deepEqual(args, [new URL(top.url).origin, top.url]);
         onProbe?.();
         result = true;
+      }
+      if (func?.name === 'navigationTiming') {
+        assert.deepEqual(args, [top.url]);
+        result = timing;
+        afterTiming?.();
       }
       if (func?.name === 'iframeOwnersInPage') result = owners;
       if (func?.name === 'frameTextInPage') {
@@ -115,17 +140,49 @@ test('Firefox binds frame reads and screenshots to the owned, selected document 
     ownedSelection = false;
     await run('use', '1');
     ownedSelection = true;
+    assert.equal(await run('url'), top.url);
+    assert.deepEqual(await run('tab-info'), { tab: 1, origin: 'https://parent.example', window: 1, active: false });
+    await reject(/Usage/, 'url', 'extra');
+    await reject(/opened by VABU/, 'js', 'timing');
+    await reject(/Usage/, 'js', 'timing', 'extra');
     await reject(/opened by VABU/, 'frame-list');
     await reject(/opened by VABU/, 'screenshot');
     await reject(/Not supported/, 'enable-screenshots');
     assert.equal(await browser.runtime.onMessage.fire({ action: 'enable-screenshots' }, { url: 'popup' }), false);
     const { sessionId } = await run('session-start', 'Frames');
     const scoped = ['--session', sessionId];
-    await run(...scoped, 'open', top.url);
+    const { group } = await run(...scoped, 'open', top.url);
     await run(...scoped, 'use', '2');
+    await reject(/require verified document IDs/, ...scoped, 'js', 'timing');
     await reject(/require verified document IDs/, ...scoped, 'frame-list');
     await reject(/require verified document IDs/, ...scoped, 'screenshot');
     legacy = false;
+    const normalUrl = top.url;
+    top.url = 'http://127.0.0.1:4567/?private=query';
+    await run(...scoped, 'use', '2');
+    assert.equal(await run(...scoped, 'url'), top.url);
+    assert.deepEqual(await run(...scoped, 'tab-info'), { tab: 2, origin: 'http://127.0.0.1:4567', window: 1, active: false });
+    membership.set(1, group); // Timing does not require a managed group.
+    assert.deepEqual(await run(...scoped, 'js', 'timing'), timing);
+    membership.delete(1);
+    let timingProbes = 0;
+    onProbe = () => { if (++timingProbes === 3) rootGranted = false; };
+    await reject(/Cannot verify/, ...scoped, 'js', 'timing');
+    rootGranted = true;
+    timingProbes = 0;
+    await reject(/Cannot verify/, ...scoped, 'tab-info');
+    rootGranted = true;
+    onProbe = undefined;
+    afterTiming = () => { rootGranted = false; };
+    await reject(/Cannot verify/, ...scoped, 'js', 'timing');
+    rootGranted = true;
+    afterTiming = undefined;
+    frames.set(0, { ...top, documentId: 'replacement' });
+    await reject(/Cannot verify/, ...scoped, 'url');
+    await reject(/Cannot verify/, ...scoped, 'tab-info');
+    await reject(/Cannot verify/, ...scoped, 'js', 'timing');
+    frames.set(0, top);
+    top.url = normalUrl;
     await run(...scoped, 'use', '2');
     await reject(/Select a tab for this VABU session/, 'frame-list');
     childGranted = false;
