@@ -45,7 +45,7 @@ function fixture(t) {
   doc.elementFromPoint = () => button;
   doc.activeElement = field;
   const globals = {
-    vabuCursorState: state, document: doc, location: { origin }, window: top, innerWidth: 100, innerHeight: 100,
+    vabuCursorState: state, document: doc, location: { origin }, origin, window: top, innerWidth: 100, innerHeight: 100,
     matchMedia: () => ({ matches: false }), getComputedStyle: (node) => node.styles ?? {},
     Event: FakeEvent, MouseEvent: FakeEvent, PointerEvent: FakeEvent, KeyboardEvent: FakeEvent, WheelEvent: FakeEvent,
     InputEvent: FakeEvent, HTMLTextAreaElement: class {}, HTMLSelectElement: select.constructor,
@@ -190,6 +190,32 @@ test('wheel emits both axes, scrolls nested panels, and honors cancellation', as
   button.cancel = (event) => event.type === 'wheel';
   await commands.wheel(['5', '5', '@r1'], ctx);
   assert.deepEqual([scroller.scrollLeft, scroller.scrollTop], [15, 32]);
+});
+
+test('background scroll checks visibility, URL, deadline and hit before scrolling', (t) => {
+  const { doc, button, element, log } = fixture(t);
+  const href = `${origin}/fixture`;
+  t.mock.method(Date, 'now', () => 100);
+  location.href = href;
+  const scroll = (deadline = 200) => interactionInPage(origin, 'overlay', 'apply',
+    { kind: 'wheel', dx: 0, dy: 12, start: null }, { href, deadline });
+  doc.hidden = false;
+  assert.match(scroll().error, /activation or document changed/);
+  doc.hidden = true;
+  location.href = `${href}#changed`;
+  assert.match(scroll().error, /activation or document changed/);
+  location.href = href;
+  assert.match(scroll(100).error, /Scroll timed out/);
+  doc.elementFromPoint = () => element('iframe');
+  assert.match(scroll().error, /framed/);
+  assert.equal(log.length, 0);
+
+  doc.elementFromPoint = () => button;
+  doc.scrollingElement = button.parentElement = element();
+  doc.scrollingElement.scrollBy = () => assert.fail('Must not scroll after the wheel handler changes the URL');
+  button.cancel = () => { location.href = `${href}#changed`; return false; };
+  assert.match(scroll().error, /activation or document changed/);
+  assert.equal(log.length, 1);
 });
 
 test('keyboard chords target the original focus with ordered modifier lifetimes', async (t) => {

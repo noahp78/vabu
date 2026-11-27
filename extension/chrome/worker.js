@@ -702,6 +702,69 @@ async function checkedTab(s) {
   return info;
 }
 
+async function scroll(connection, s, dy, ref) {
+  const documentId = s.documentId;
+  const version = s.ownedDocumentVersion;
+  const timeoutError = new Error('Scroll timed out; input may have been applied. Inspect before retrying');
+  const deadline = Date.now() + 3000;
+  let timer, expired = false;
+  const assertCurrent = () => {
+    if (expired || Date.now() >= deadline) throw timeoutError;
+    if (bridge !== connection || session !== s || !documentId || s.documentId !== documentId
+      || s.ownedDocumentVersion !== version) throw new Error('Scroll cancelled: selected document changed');
+  };
+  const assertCanScroll = () => {
+    assertCurrent();
+    if (s.modalOpen) throw new Error('Scroll unavailable while a JavaScript dialog is open');
+  };
+  const inject = async (func, ...args) => {
+    assertCanScroll();
+    const [result] = await chrome.scripting.executeScript({
+      target: { tabId: s.id, documentIds: [documentId] }, world: 'ISOLATED', func, args: [s.origin, ...args],
+    });
+    assertCurrent();
+    if (result?.documentId !== documentId || result.frameId !== 0) throw new Error('Selected document changed');
+    if (result.result?.ok !== true) throw new Error(result.result?.error || 'Scroll target is not available');
+    return result.result.value;
+  };
+  const run = async () => {
+    const { active } = await checkedTab(s);
+    assertCurrent();
+    if (!active) {
+      requireOwnedSelection(connection, s);
+      const scope = ownedDocumentScope(connection, s);
+      scope.parent.url = (await chrome.tabs.get(s.id)).url;
+      if ((await scope.verify()).active !== false) throw new Error('Scroll cancelled: tab activation changed');
+      const value = await inject(interactionInPage, s.overlayKey, 'apply', {
+        kind: 'wheel', dx: 0, dy, start: ref ? { ref } : null,
+      }, { href: scope.parent.url, deadline });
+      await scope.verify();
+      assertCurrent();
+      return value;
+    }
+    const point = await inject(inPage, s.overlayKey, !s.inManagedGroup, 'scroll', ref ?? null);
+    for (const event of [{ type: 'mouseMoved' }, { type: 'mouseWheel', deltaX: 0, deltaY: dy }]) {
+      if (!(await checkedTab(s)).active) throw new Error('Scroll cancelled: tab activation changed');
+      assertCanScroll();
+      await chrome.debugger.sendCommand({ tabId: s.id }, 'Input.dispatchMouseEvent', { ...point, ...event });
+      assertCurrent();
+    }
+    return true;
+  };
+  // Chromium does not expose cancellation for issued input or script calls.
+  // Release the bridge slot on timeout, but never continue to the next input step.
+  try {
+    return await Promise.race([new Promise((_, reject) => {
+      timer = setTimeout(() => {
+        expired = true;
+        reject(timeoutError);
+      }, Math.max(0, deadline - Date.now()));
+    }), run()]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function click(connection, s, target, y, wasActive, documentId = s.documentId, findTicket) {
   if (!documentId || s.documentId !== documentId) throw new Error('Click cancelled: selected document changed');
   let scope;
@@ -1226,19 +1289,16 @@ async function command(connection, args, setBeforeReply) {
   if (verb === 'title' || Object.hasOwn(adapterCommands, verb)) return runAdapter(connection, verb, args.slice(1));
   const s = session;
   if (!s) throw new Error('Select an allowed tab with vabu use TAB_ID');
+  const integer = (value) => /^-?\d{1,5}$/.test(value);
+  const ref = (value) => /^@r[1-9]\d{0,2}$/.test(value);
+  if (verb === 'scroll' && integer(a) && (count === 1 || (count === 2 && ref(b)))) {
+    return scroll(connection, s, Number(a), b);
+  }
   const { active: wasActive } = await checkedTab(s);
   if (verb === 'snapshot' && count === 0) return page(s, verb);
   if (verb === 'type' && count === 1 && a.length > 0 && a.length <= 4000) {
     await page(s, verb);
     await cdp(s, 'Input.insertText', { text: a });
-    return true;
-  }
-  const integer = (value) => /^-?\d{1,5}$/.test(value);
-  const ref = (value) => /^@r[1-9]\d{0,2}$/.test(value);
-  if (verb === 'scroll' && integer(a) && (count === 1 || (count === 2 && ref(b)))) {
-    const point = await page(s, verb, b ?? null);
-    await cdp(s, 'Input.dispatchMouseEvent', { ...point, type: 'mouseMoved' });
-    await cdp(s, 'Input.dispatchMouseEvent', { ...point, type: 'mouseWheel', deltaX: 0, deltaY: Number(a) });
     return true;
   }
   if ((verb === 'move' || verb === 'click') && count === 2 && integer(a) && integer(b)

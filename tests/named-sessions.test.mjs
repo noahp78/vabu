@@ -9,7 +9,7 @@ const event = () => {
   };
 };
 
-test('named sessions group their own tabs and reject commands targeting another session', async () => {
+test('named sessions group their own tabs and reject commands targeting another session', async (t) => {
   const port = { onMessage: event(), onDisconnect: event(), postMessage(message) {
     if (message.type === 'configure') {
       assert.deepEqual(message, { type: 'configure', socketName: 'chrome-default' });
@@ -23,6 +23,8 @@ test('named sessions group their own tabs and reject commands targeting another 
   const clickMotion = [];
   let visible = true;
   let afterPreview;
+  let onMouseEvent;
+  let onScrollScript;
   let normalWindow = { id: 1, type: 'normal', incognito: false };
   globalThis.chrome = {
     windows: {
@@ -43,7 +45,10 @@ test('named sessions group their own tabs and reject commands targeting another 
     action: { async setBadgeText() {}, async setIcon() {} },
     permissions: { onRemoved: event(), async contains() { return true; }, async getAll() { return {}; } },
     debugger: { onDetach: event(), onEvent: event(), async attach() {}, async detach() {}, async sendCommand(_target, method, params) {
-      if (method === 'Input.dispatchMouseEvent') mouseEvents.push(params.type);
+      if (method === 'Input.dispatchMouseEvent') {
+        mouseEvents.push(params.type);
+        await onMouseEvent?.(params);
+      }
     } },
     webNavigation: {
       onBeforeNavigate: event(), onCommitted: event(), onHistoryStateUpdated: event(),
@@ -54,17 +59,23 @@ test('named sessions group their own tabs and reject commands targeting another 
           documentLifecycle: 'active', frameType: 'outermost_frame', errorOccurred: false };
       },
     },
-    scripting: { async executeScript({ args, target }) {
+    scripting: { async executeScript({ args, target, func }) {
       pageActions.push([target.tabId, args[3]]);
       if (args[3] === 'click') { clickMotion.push(args[6]); afterPreview?.(); }
       const documentId = `document-${target.tabId}`;
-      if (['click', 'confirmClick', 'clickReceipt'].includes(args[3])) assert.deepEqual(target.documentIds, [documentId]);
+      if (func.name === 'interactionInPage') {
+        assert.deepEqual(target.documentIds, [documentId]);
+        assert.deepEqual(args.slice(2, 4), ['apply', { kind: 'wheel', dx: 0, dy: 20, start: { ref: '@r1' } }]);
+        assert.equal(args[4].href, tabs.get(target.tabId).url);
+        await onScrollScript?.();
+      }
+      if (['click', 'confirmClick', 'clickReceipt', 'scroll'].includes(args[3])) assert.deepEqual(target.documentIds, [documentId]);
       if (args[3] === 'confirmClick' && !tabs.get(target.tabId).active) {
         assert.equal(args[5], true);
         assert.equal(args[6], tabs.get(target.tabId).url);
       }
-      const value = args[3] === 'click' ? { x: 10, y: 10 } : args[3] !== 'waitCursor' || visible;
-      return [{ documentId, result: { ok: true, value } }];
+      const value = ['click', 'scroll'].includes(args[3]) ? { x: 10, y: 10 } : args[3] !== 'waitCursor' || visible;
+      return [{ frameId: 0, documentId, result: { ok: true, value } }];
     } },
     tabs: {
       onUpdated: event(), onRemoved: event(),
@@ -161,6 +172,45 @@ test('named sessions group their own tabs and reject commands targeting another 
     assert.match(await run('--session', b.sessionId, 'click', '@r1'), /not visible/);
     assert.deepEqual(mouseEvents, ['mouseMoved', 'mousePressed', 'mouseReleased', 'mouseMoved']);
     assert.deepEqual(clickMotion, [false, false, false, true, true]);
+
+    const scroll = () => run('--session', b.sessionId, 'scroll', '20', '@r1');
+    mouseEvents.length = 0;
+    assert.equal(await scroll(), true);
+    assert.deepEqual(mouseEvents.splice(0), ['mouseMoved', 'mouseWheel']);
+    tabs.get(second.tab).active = false;
+    assert.equal(await scroll(), true);
+    assert.deepEqual(mouseEvents, []);
+    onScrollScript = () => chrome.webNavigation.onHistoryStateUpdated.fire({ tabId: second.tab, frameId: 0 });
+    assert.match(await scroll(), /selected document changed/i);
+    onScrollScript = undefined;
+
+    // Simulate unresolved browser calls. Advancing the worker's clock releases
+    // the bridge without retrying, even if the original call later resolves.
+    t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+    try {
+      for (const step of ['mouseMoved', 'mouseWheel', 'page']) {
+        const started = Promise.withResolvers();
+        const pending = Promise.withResolvers();
+        const hold = () => { started.resolve(); return pending.promise; };
+        tabs.get(second.tab).active = step !== 'page';
+        onMouseEvent = event => { if (event.type === step) return hold(); };
+        onScrollScript = step === 'page' ? hold : undefined;
+        const scrolling = scroll();
+        await started.promise;
+        assert.match(await run('status'), /Another command is running/);
+        t.mock.timers.tick(3000);
+        assert.match(await scrolling, /Scroll timed out.*Inspect before retrying/);
+        assert.equal((await run('--session', b.sessionId, 'status')).tab, second.tab);
+        pending.resolve();
+        await new Promise(resolve => setImmediate(resolve));
+        assert.deepEqual(mouseEvents.splice(0), step === 'page' ? [] :
+          step === 'mouseMoved' ? ['mouseMoved'] : ['mouseMoved', 'mouseWheel']);
+      }
+    } finally {
+      t.mock.timers.reset();
+      onMouseEvent = onScrollScript = undefined;
+      tabs.get(second.tab).active = true;
+    }
     try {
       assert.match(await run('use', String(first.tab)), /Approval required/);
       assert.match(await run('use', String(sibling.tab)), /Approval required/);

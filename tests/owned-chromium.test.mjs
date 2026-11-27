@@ -25,7 +25,7 @@ async function until(check) {
   assert.fail('Timed out waiting for Chromium fixture');
 }
 
-test('isolated Chromium: owned capture, dialogs and tab title marker', {
+test('isolated Chromium: background scroll, owned capture and dialogs', {
   skip: !chromium || process.platform !== 'linux', timeout: 30000,
 }, async (t) => {
   const dir = await mkdtemp(join(tmpdir(), 'vabu-chrome-'));
@@ -38,10 +38,24 @@ test('isolated Chromium: owned capture, dialogs and tab title marker', {
   let polling = false;
   let result;
   const orders = [];
+  const scrollSteps = [];
+  let scrollState, foregroundWheel;
   const titles = [];
   const server = createServer((req, res) => {
     if (req.url === '/next') { polling = true; res.end(next); next = ''; }
     else if (req.url.startsWith('/result/')) { result = req.url; res.end(); }
+    else if (req.url.startsWith('/scroll-step/')) { scrollSteps.push(req.url.slice('/scroll-step/'.length)); res.end(); }
+    else if (req.url.startsWith('/foreground-wheel/')) { foregroundWheel = req.url.split('/').slice(2); res.end(); }
+    else if (req.url === '/foreground') {
+      res.setHeader('Content-Type', 'text/html');
+      res.end(`<!doctype html><title>Foreground scroll fixture</title><div style="height: 250vh"></div><script>
+        addEventListener('wheel', e => fetch('/foreground-wheel/' + e.deltaY + '/' + e.isTrusted + '/' + document.hidden));
+      </script>`);
+    }
+    else if (req.url.startsWith('/scroll-state/')) {
+      scrollState = JSON.parse(decodeURIComponent(req.url.slice('/scroll-state/'.length)));
+      res.end();
+    }
     else if (req.url.startsWith('/order/')) { orders.push(req.url.slice('/order/'.length)); res.end(); }
     else if (req.url.startsWith('/title?')) {
       titles.push(new URL(req.url, 'http://127.0.0.1').searchParams.get('value'));
@@ -49,11 +63,23 @@ test('isolated Chromium: owned capture, dialogs and tab title marker', {
     }
     else {
       res.setHeader('Content-Type', 'text/html');
-      res.end(`<!doctype html><title>Owned fixture</title><body>Fixture<script>
+      res.end(`<!doctype html><title>Owned fixture</title><body>Fixture
+      <input type="file" id="protected"><div style="height: 150px"></div>
+      <div id="panel" style="width: 200px; height: 160px; overflow: auto">
+        <div style="position: sticky; top: 0"><button>Panel target</button><button id="cancel">Cancel scroll</button></div>
+        <div style="height: 600px"></div>
+      </div><div style="height: 250vh"></div><script>
+        const panel = document.querySelector('#panel');
+        const wheels = [];
+        document.addEventListener('wheel', e => wheels.push([e.deltaY, e.isTrusted]));
+        document.querySelector('#cancel').addEventListener('wheel', e => e.preventDefault(), { passive: false });
         new MutationObserver(() => fetch('/title?value=' + encodeURIComponent(document.title)))
           .observe(document.querySelector('title'), { childList: true, subtree: true, characterData: true });
         (async () => { for (;;) {
           const action = await fetch('/next', { cache: 'no-store' }).then(r => r.text());
+          if (action === 'check-scroll') await fetch('/scroll-state/' + encodeURIComponent(JSON.stringify({
+            top: scrollY, panel: panel.scrollTop, hidden: document.hidden, wheels,
+          })));
           if (action === 'alert') { alert('private alert'); await fetch('/result/true'); }
           if (action === 'confirm') await fetch('/result/' + confirm('private confirm'));
           if (action === 'prompt') await fetch('/result/' + (prompt('private prompt', 'private default') === null));
@@ -79,7 +105,22 @@ test('isolated Chromium: owned capture, dialogs and tab title marker', {
           void fetch(${JSON.stringify(url + 'order/')} + (resolved ? 'after-resolution' : 'before-resolution'));
         }
       });
+      const traceScroll = name => fetch(${JSON.stringify(url + 'scroll-step/')} + name);
+      const originalScript = chrome.scripting.executeScript.bind(chrome.scripting);
+      chrome.scripting.executeScript = async options => {
+        if (options.args?.[3] !== 'scroll' && !options.args?.[4]?.deadline) return originalScript(options);
+        await traceScroll('page-start');
+        const reply = await originalScript(options);
+        await traceScroll('page-end');
+        return reply;
+      };
       chrome.debugger.sendCommand = async (target, method, params) => {
+        if (method === 'Input.dispatchMouseEvent') {
+          await traceScroll(params.type + '-start');
+          const reply = await originalSend(target, method, params);
+          await traceScroll(params.type + '-end');
+          return reply;
+        }
         if (method !== 'Page.handleJavaScriptDialog') return originalSend(target, method, params);
         resolved = false;
         const reply = await originalSend(target, method, params);
@@ -130,7 +171,36 @@ test('isolated Chromium: owned capture, dialogs and tab title marker', {
       result = undefined;
       await assert.rejects(scoped('inspect-dialog', action, dialog.id), /stale/);
     }
+    const snapshot = await scoped('snapshot');
+    const scrollStateAfter = async () => {
+      scrollState = undefined;
+      next = 'check-scroll';
+      return until(() => scrollState);
+    };
+    try {
+      assert.equal(await scoped('scroll', '100'), true);
+      assert.deepEqual(await scrollStateAfter(), { top: 100, panel: 0, hidden: true, wheels: [[100, false]] });
+      const panelRef = snapshot.controls.find(({ name }) => name === 'Panel target').ref;
+      const cancelRef = snapshot.controls.find(({ name }) => name === 'Cancel scroll').ref;
+      assert.equal(await scoped('scroll', '60', panelRef), true);
+      assert.deepEqual(await scrollStateAfter(), { top: 100, panel: 60, hidden: true, wheels: [[100, false], [60, false]] });
+      assert.equal(await scoped('scroll', '50', cancelRef), true);
+      assert.deepEqual(await scrollStateAfter(), { top: 100, panel: 60, hidden: true,
+        wheels: [[100, false], [60, false], [50, false]] });
+      await assert.rejects(scoped('scroll', '50', '@r999'), /Unavailable|snapshot/i);
+      assert.equal((await scoped('status')).tab, tab);
+      assert.equal((await scoped('tabs')).find(item => item.tab === tab).active, false);
+    } finally { t.diagnostic('scroll trace: ' + scrollSteps.join(', ')); }
+    assert.ok(scrollSteps.every(step => step.startsWith('page-')), 'background scroll never sends CDP mouse input');
     await scoped('release');
+    const foreground = await scoped('open', url + 'foreground');
+    await scoped('tab-show', String(foreground.tab));
+    await until(() => scoped('use', String(foreground.tab)).catch(() => null));
+    await until(() => scoped('snapshot').then(value => value.title === 'Foreground scroll fixture').catch(() => false));
+    scrollSteps.length = 0;
+    assert.equal(await scoped('scroll', '100'), true);
+    assert.deepEqual(await until(() => foregroundWheel), ['100', 'true', 'false']);
+    assert.deepEqual(scrollSteps, ['page-start', 'page-end', 'mouseMoved-start', 'mouseMoved-end', 'mouseWheel-start', 'mouseWheel-end']);
     browser.kill();
     await browserEnded;
   } finally {
