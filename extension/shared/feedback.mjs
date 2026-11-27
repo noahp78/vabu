@@ -545,7 +545,8 @@ function feedbackInPage(href, token, restored, deadline) {
     if (restored) {
       for (const { target, note } of restored) {
         let element;
-        if (target) {
+        // A positional selector can uniquely match a different element after a reorder.
+        if (target && !target.includes(':nth-of-type(')) {
           try {
             const matches = document.querySelectorAll(target);
             if (matches.length === 1) element = matches[0];

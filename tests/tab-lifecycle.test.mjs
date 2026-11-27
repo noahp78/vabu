@@ -78,12 +78,14 @@ test('tab commands fail closed on navigation, permission or bridge changes', asy
   let granted = true;
   let connected = true;
   let owned = true;
-  let duringQuery = noop;
+  let duringQuery = noop, duringPermission = noop;
+  const onRemoved = event(), onDetached = event();
   const api = {
-    permissions: { async contains() { return granted; } },
+    permissions: { async contains() { duringPermission(); return granted; } },
     windows: { async get(id) { return normal(id); }, update: assert.fail },
     tabs: {
       async get() { return { ...tab }; },
+      onRemoved, onDetached,
       async query() { duringQuery(); return [{ id: 10 }, { id: 20 }]; },
       update: assert.fail,
       remove: assert.fail,
@@ -108,6 +110,13 @@ test('tab commands fail closed on navigation, permission or bridge changes', asy
   duringQuery = () => { connected = false; };
   await assert.rejects(manage('tab-close'), /Bridge stopped/);
   connected = true;
+  for (const departed of [onRemoved, onDetached]) {
+    duringQuery = () => { duringPermission = () => departed.fire(20); };
+    await assert.rejects(manage('tab-close'), /last tab/);
+    assert.equal(onRemoved.size, 0);
+    assert.equal(onDetached.size, 0);
+    duringPermission = noop;
+  }
   api.tabs.query = async () => [{ id: 10 }];
   await assert.rejects(manage('tab-close'), /last tab/);
 });
