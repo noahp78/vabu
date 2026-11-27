@@ -354,7 +354,17 @@ test('shared annotation UI preserves unsent drafts and recalls, edits, and resen
     positionalForm.onsubmit({ isTrusted: true, preventDefault() {} });
     assert.equal(find('button', 'Send 1 annotation').disabled, false);
     await find('button', 'Send 1 annotation').onclick({ isTrusted: true });
-    assert.deepEqual(takeFeedback(owner, []), { feedback: [{ page, ...point('Second sibling', 'section > button:nth-of-type(2)') }] });
+    const selector = 'section > button:nth-of-type(2)';
+    matches.set(selector, [first]); // The list changed without a navigation.
+    await open('feedback-recall');
+    host = root.children.at(-1);
+    const markers = all(host.shadow).filter(node => node.localName === 'button' && node.textContent === '1');
+    assert.equal(markers.length, 1, 'Only the draft list marker should remain');
+    markers[0].onclick({ isTrusted: true });
+    assert.equal(all(host.shadow).find(node => node.localName === 'textarea').value, 'Second sibling');
+    all(host.shadow).find(node => node.localName === 'form').onsubmit({ isTrusted: true, preventDefault() {} });
+    await find('button', 'Send 1 annotation').onclick({ isTrusted: true });
+    assert.deepEqual(takeFeedback(owner, []), { feedback: [{ page, ...point('Second sibling', selector) }] });
 
     // The selected element may be unique among its siblings while an ancestor is not.
     const otherSection = new Node('section');

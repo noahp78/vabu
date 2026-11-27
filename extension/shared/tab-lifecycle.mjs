@@ -188,13 +188,25 @@ export async function manageOwnedTab(api, verb, args, owns, assertBridge, releas
     return { tab: id, requested: true };
   }
   if (verb === 'tab-close') {
-    const siblings = await api.tabs.query({ windowId: window.id });
-    const tab = await approved(original);
-    requireStillLoaded(tab);
-    if (tab.active || tab.pinned) throw new Error('Cannot close an active or pinned tab');
-    if (!siblings.some(sibling => sibling.id !== id)) throw new Error('Cannot close the last tab in a window');
-    assertOwned();
-    await api.tabs.remove(id);
+    const departed = new Set();
+    const markDeparted = (tabId) => departed.add(tabId);
+    api.tabs.onRemoved?.addListener(markDeparted);
+    api.tabs.onDetached?.addListener(markDeparted);
+    try {
+      const siblings = await api.tabs.query({ windowId: window.id });
+      const tab = await approved(original);
+      requireStillLoaded(tab);
+      if (tab.active || tab.pinned) throw new Error('Cannot close an active or pinned tab');
+      // shortcut: browser check and removal are not atomic; use a conditional close API if one becomes available.
+      if (!siblings.some(sibling => sibling.id !== id && !departed.has(sibling.id))) {
+        throw new Error('Cannot close the last tab in a window');
+      }
+      assertOwned();
+      await api.tabs.remove(id);
+    } finally {
+      api.tabs.onRemoved?.removeListener(markDeparted);
+      api.tabs.onDetached?.removeListener(markDeparted);
+    }
     assertBridge();
     return { tab: id, closed: true };
   }
